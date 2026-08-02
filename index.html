@@ -1,0 +1,1883 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera coverage planner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#0F1319;--ink2:#161C25;--line:#232C38;--line2:#2E3947;
+  --bone:#E9E5DB;--dim:#8A9099;--warn:#E08A82;
+  --sans:"Space Grotesk","Helvetica Neue",Arial,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--ink);color:var(--bone);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+.wrap{display:grid;grid-template-columns:minmax(0,1fr) 340px;height:100vh}
+.stage{position:relative;min-width:0;background:radial-gradient(ellipse at 45% 40%,#151B24 0%,var(--ink) 72%);overflow:hidden}
+.stage.split #cov,.stage.split #plan,.stage.split #view3d{width:50%}
+.stage.split #povgrid{left:50%;width:50%;padding:52px 10px 10px;border-left:1px solid var(--line)}
+#cov,#plan,#view3d{position:absolute;inset:0;width:100%;height:100%}
+#povgrid{position:absolute;inset:0;z-index:4;display:none;grid-template-columns:1fr 1fr;
+  gap:8px;padding:52px 12px 12px;overflow-y:auto;align-content:start;grid-auto-rows:min-content}
+.povcell{position:relative;background:#0B0F14;border:1px solid var(--line);border-radius:3px;
+  overflow:hidden;cursor:zoom-in;aspect-ratio:16/10;height:auto;align-self:start}
+.povcell.wide{aspect-ratio:32/10;grid-column:span 2}
+#povgrid.one .povcell.wide{grid-column:span 1}
+.povcell svg{width:100%;height:100%;display:block}
+.dpad{position:absolute;right:8px;bottom:8px;display:grid;
+  grid-template-columns:repeat(3,24px);grid-template-rows:repeat(3,24px);gap:2px;
+  opacity:.45;transition:opacity .15s;z-index:2}
+.povcell:hover .dpad{opacity:1}
+.dpad button{background:rgba(15,19,25,.85);border:1px solid var(--line2);color:var(--bone);
+  font-size:11px;line-height:1;border-radius:2px;cursor:pointer;padding:0;
+  display:flex;align-items:center;justify-content:center;font-family:var(--mono)}
+.dpad button:hover{background:#2A333F;border-color:#5A6678}
+.dpad button:active{background:#3A4553}
+.dpad button:focus-visible{outline:2px solid var(--bone);outline-offset:1px}
+.dpad .u{grid-area:1/2}.dpad .l{grid-area:2/1}.dpad .c{grid-area:2/2;font-size:9px}
+.dpad .r{grid-area:2/3}.dpad .d{grid-area:3/2}
+#bPlay[aria-pressed="true"]{color:#93BF63;border-color:#4E6B3A}
+#cov{z-index:1}#plan{z-index:2}#view3d{z-index:3;background:linear-gradient(#3F70A4 0%,#7FAAD2 45%,#0F1319 46%,#0F1319 100%)}
+svg{display:block;touch-action:none}
+.masthead{position:absolute;top:18px;left:22px;z-index:6;pointer-events:none}
+.masthead h1{font-size:12px;font-weight:700;letter-spacing:.22em;text-transform:uppercase}
+.masthead p{font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:5px}
+.modes{position:absolute;top:16px;right:18px;z-index:6;display:flex;gap:4px}
+.modes button{background:#161C25;border:1px solid var(--line2);color:var(--dim);
+  font-family:var(--mono);font-size:10px;letter-spacing:.1em;padding:6px 11px;border-radius:2px;cursor:pointer}
+.modes button[aria-pressed="true"]{color:var(--bone);border-color:#5A6678;background:#212A35}
+.hint{position:absolute;left:22px;bottom:16px;z-index:6;font-family:var(--mono);font-size:10px;
+  color:var(--dim);line-height:1.7;pointer-events:none}
+.toast{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);z-index:7;background:#212A35;
+  border:1px solid var(--line2);padding:7px 13px;border-radius:3px;font-family:var(--mono);font-size:10.5px;
+  opacity:0;transition:opacity .2s;pointer-events:none}
+.toast.on{opacity:1}
+.panel{background:var(--ink2);border-left:1px solid var(--line);padding:18px 16px;overflow-y:auto}
+.eyebrow{font-family:var(--mono);font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim);margin:0 0 9px}
+.divider{height:1px;background:var(--line);margin:16px 0}
+.card{border:1px solid var(--line);border-left:3px solid var(--dot);border-radius:3px;margin-bottom:6px;overflow:hidden}
+.card.off{opacity:.4}
+.card.sel{background:#1B222C;border-color:var(--dot)}
+.head{display:flex;align-items:flex-start;gap:8px;padding:8px 10px;cursor:pointer}
+.head:hover{background:#1B222C}
+.head .b{flex:1;min-width:0}
+.head .id{font-family:var(--mono);font-size:9px;color:var(--dot);letter-spacing:.1em}
+.head .nm{font-size:12.5px;font-weight:500;margin:2px 0 3px}
+.head .mt{font-family:var(--mono);font-size:9.5px;color:var(--dim);line-height:1.55}
+.head .mt b{color:var(--warn);font-weight:500}
+.eye{background:none;border:none;color:var(--dim);cursor:pointer;font-size:13px;padding:0 2px;line-height:1}
+.eye:hover{color:var(--bone)}
+.edit{padding:0 10px 9px;display:none}
+.card.sel .edit{display:block}
+.fld{display:flex;align-items:center;gap:6px;margin-bottom:5px}
+.fld label{font-family:var(--mono);font-size:9.5px;color:var(--dim);width:52px;flex:none}
+input.t{flex:1;min-width:0;background:#0F1319;border:1px solid var(--line2);color:var(--bone);
+  font-family:var(--mono);font-size:10.5px;padding:5px 6px;border-radius:2px}
+input.t:focus{outline:1px solid var(--dot);border-color:var(--dot)}
+.row{display:flex;gap:5px}
+button.act{background:#0F1319;border:1px solid var(--line2);color:var(--bone);font-family:var(--mono);
+  font-size:10px;letter-spacing:.05em;padding:6px 8px;border-radius:2px;cursor:pointer;flex:1}
+button.act:hover{background:#212A35;border-color:#455063}
+button.act:focus-visible{outline:2px solid var(--bone);outline-offset:1px}
+button.danger:hover{border-color:#B4564F;color:var(--warn)}
+.layer{display:flex;align-items:center;gap:8px;padding:5px 0;cursor:pointer;font-size:12px}
+.layer input{accent-color:var(--bone);width:13px;height:13px;cursor:pointer}
+textarea{width:100%;height:80px;background:#0F1319;border:1px solid var(--line2);color:var(--bone);
+  font-family:var(--mono);font-size:9.5px;padding:6px;border-radius:2px;resize:vertical;line-height:1.5}
+.note{font-family:var(--mono);font-size:9.5px;color:var(--dim);line-height:1.6;margin-top:6px}
+.stat{font-family:var(--mono);font-size:10px;color:var(--dim);line-height:1.7}
+.stat b{color:var(--bone);font-weight:500}
+select.t{flex:1;background:#0F1319;border:1px solid var(--line2);color:var(--bone);
+  font-family:var(--mono);font-size:10.5px;padding:5px;border-radius:2px}
+.plabel{font-family:var(--mono);font-size:2.1px;fill:#6E7783;letter-spacing:.1em}
+.camlabel{font-family:var(--mono);font-size:2.5px;font-weight:500;letter-spacing:.06em}
+.gridline{stroke:#1E2732;stroke-width:.18}
+@media (max-width:840px){.wrap{grid-template-columns:1fr;grid-template-rows:54vh auto;height:auto}
+  .panel{border-left:none;border-top:1px solid var(--line)}.hint{display:none}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="stage" id="stage">
+    <canvas id="cov"></canvas>
+    <svg id="plan" preserveAspectRatio="xMidYMid meet"></svg>
+    <svg id="view3d" preserveAspectRatio="xMidYMid meet" style="display:none"></svg>
+    <div id="povgrid"></div>
+    <div class="masthead"><h1>Coverage planner</h1><p id="sub">3D occlusion · target height 3 ft</p></div>
+    <div class="modes">
+      <button id="m2d" aria-pressed="true">PLAN</button>
+      <button id="m3d" aria-pressed="false">3D</button>
+      <button id="mpov" aria-pressed="false">CAMS</button>
+      <button id="msplit" aria-pressed="false">SPLIT</button>
+      <button id="bPlay" title="Play the PT circuit">▶ CIRCUIT</button>
+      <button id="bSpeed" title="Playback speed">4×</button>
+    </div>
+    <div class="hint" id="hint">Scroll to zoom · drag background to pan · drag box corners to resize, ✛ to move it</div>
+    <div class="toast" id="toast"></div>
+  </div>
+
+  <aside class="panel">
+    <div class="eyebrow">Coverage <span id="stats" style="float:right;text-transform:none;letter-spacing:0"></span></div>
+    <p class="stat" id="statline"></p>
+
+    <div class="divider"></div>
+    <div class="eyebrow">Cameras</div>
+    <div id="camlist"></div>
+    <div class="row" style="margin-top:6px">
+      <button class="act" id="bAddCam">+ Camera</button>
+      <button class="act" id="bAddBox">+ Occluder</button>
+    </div>
+
+    <div class="divider"></div>
+    <div class="eyebrow">Occluders</div>
+    <div id="boxlist"></div>
+
+    <div class="divider"></div>
+    <div class="eyebrow">Settings</div>
+    <div class="fld"><label>target</label>
+      <select class="t" id="tz">
+        <option value="0">ground 0 ft</option>
+        <option value="3" selected>torso 3 ft</option>
+        <option value="5.5">head 5.5 ft</option>
+      </select></div>
+    <div class="fld"><label>draw</label>
+      <select class="t" id="rmode">
+        <option value="cones" selected>cones (vector)</option>
+        <option value="heat">heatmap (pixels)</option>
+      </select></div>
+    <div class="fld"><label>fence ft</label>
+      <input class="t" id="fh" type="number" step="0.5" value="8"></div>
+    <label class="layer"><input type="checkbox" id="tFence" checked> Perimeter fence blocks</label>
+    <label class="layer"><input type="checkbox" id="tOcc" checked> Occlusion on</label>
+    <label class="layer"><input type="checkbox" id="tId" checked> Shade face-ID range</label>
+    <label class="layer"><input type="checkbox" id="tTour"> Count PT circuit coverage</label>
+    <label class="layer"><input type="checkbox" id="tFrus" checked> Frustum solids (3D)</label>
+    <label class="layer"><input type="checkbox" id="tSplat"> Splatter surfaces (3D)</label>
+    <label class="layer"><input type="checkbox" id="tGrid" checked> 5 ft grid</label>
+
+    <div class="divider"></div>
+    <div class="eyebrow">Presets</div>
+    <div class="row" style="margin-bottom:5px">
+      <button class="act" data-preset="measured">House (measured)</button>
+    </div>
+    <div class="row" style="margin-bottom:5px">
+      <button class="act" data-preset="yours">Your 7 PTZ</button>
+      <button class="act" data-preset="duo2">2 Duo + 4 E1</button>
+    </div>
+    <div class="row"><button class="act" data-preset="duo4">4 Duo mid-wall</button>
+      <button class="act" id="bReset">Reset all</button></div>
+    <div class="row" style="margin-top:5px"><button class="act" id="bFit">Fit view</button></div>
+
+    <div class="divider"></div>
+    <div class="eyebrow">Layout code</div>
+    <textarea id="code" spellcheck="false"></textarea>
+    <div class="row" style="margin-top:5px">
+      <button class="act" id="bCopy">Copy</button>
+      <button class="act" id="bLoad">Load</button>
+    </div>
+    <p class="note">Plain text — paste into chat to share the exact geometry.</p>
+    <div class="divider"></div>
+    <div class="eyebrow">Shortcuts</div>
+    <p class="note">2 / 3 / 4 / 5 &nbsp;plan · 3D · cams · split<br>Space &nbsp;play PT circuit<br>
+      F &nbsp;fit view &nbsp;·&nbsp; G &nbsp;grid<br>
+      B &nbsp;restore measured boundary<br>
+      E &nbsp;edit boundary &nbsp;·&nbsp; Esc &nbsp;deselect<br>
+      S &nbsp;splatter &nbsp;·&nbsp; V &nbsp;frustums<br>O &nbsp;occlusion on/off</p>
+  </aside>
+</div>
+
+<script>
+"use strict";
+const NS='http://www.w3.org/2000/svg';
+const $=i=>document.getElementById(i);
+const rad=d=>d*Math.PI/180, deg=r=>r*180/Math.PI;
+const norm=a=>((a%360)+360)%360;
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const el=(n,at={})=>{const e=document.createElementNS(NS,n);for(const k in at)e.setAttribute(k,at[k]);return e;};
+const txt=(at,s)=>{const e=el('text',at);e.textContent=s;return e;};
+
+const LENS={
+  ptz:{f:88 ,vf:41.5,r:40,label:'E1 SE PTZ 88°'},
+  duo:{f:180,vf:55  ,r:65,label:'Duo 3/3V 180°'}
+};
+const lensOf=c=>LENS[c.lens||'ptz'];
+const PAL=['#E8A33D','#4FB3C4','#C97FA0','#93BF63','#B49BE0','#E0785C','#63BFA6','#D9C25E'];
+
+/* ---------------- state ---------------- */
+const MEASURED=`CAM C1 | ON | DUO | x 12.7 | y -0.2 | z 11 | a 270 | t 41.5 | N wall Duo 3V
+CAM C2 | ON | DUO | x 2 | y 27.9 | z 11 | a 92 | t 37.5 | S wall Duo 3V
+CAM C3 | ON | PTZ | x -0.6 | y 12.7 | z 7.5 | a 195 | t 28 | Front porch E1
+CAM C4 | ON | PTZ | x 25.7 | y 1.6 | z 8 | a 31 | t 16 | Back porch E1
+CAM C5 | ON | PTZ | x -0.4 | y 24.7 | z 10.5 | a 220 | t 32 | SW corner E1
+CAM C6 | ON | PTZ | x 25.4 | y 24.5 | z 10.5 | a 313 | t 34 | SE corner E1
+TOUR C3 | home 20 | 68,28.5,8 | 152,28.5,8
+TOUR C4 | home 20 | 354,16,8 | 266,16,8
+TOUR C5 | home 20 | 94,32,8 | 184,32,8
+TOUR C6 | home 20 | 262,36,8 | 356,36,8
+PROP -44.3,-41 | 149.7,-6.6 | 150.7,42.2 | -48.6,51.6
+FENCE | ON | h 8
+BOX B1 | ON | x0 0 | y0 0 | x1 25 | y1 25 | base 0/0/0/0 | top 20/20/20/20 | House
+BOX B2 | ON | x0 25 | y0 -1 | x1 33 | y1 10.5 | base 12/9.5/9.5/12 | top 12.5/10/10/12.5 | Back porch roof
+BOX B3 | ON | x0 -6 | y0 6.5 | x1 0 | y1 15 | base 8/8.25/8.25/8 | top 11.25/11.5/11.5/11.25 | Front porch roof
+BOX B4 | ON | x0 25 | y0 10 | x1 38 | y1 24.5 | base 0/0/0/0 | top 2.5/2.5/2.5/2.5 | Deck
+BOX B5 | ON | x0 -6 | y0 6.6 | x1 -5 | y1 7.6 | base 0/0/0/0 | top 8/8/8/8 | Front Porch Post
+BOX B6 | ON | x0 -6 | y0 14 | x1 -5 | y1 15 | base 0/0/0/0 | top 8/8/8/8 | Front Porch Post 2
+BOX B7 | ON | x0 -5.5 | y0 14 | x1 -0.1 | y1 15 | base 0/0/0/0 | top 3.25/3.25/3.25/3.25 | Porch Wall S
+BOX B8 | ON | x0 -5 | y0 6.6 | x1 0 | y1 7.6 | base 0/0/0/0 | top 3/3/2.75/2.75 | Porch Wall N
+BOX B9 | ON | x0 25.1 | y0 3.2 | x1 33.8 | y1 10 | base 0/0/0/0 | top 2.5/2.5/2.5/2.5 | Deck 2
+BOX B10 | ON | x0 30.2 | y0 8.8 | x1 31.2 | y1 9.8 | base 0/0/0/0 | top 10.4/10.4/10.4/10.4 | Back Porch Post S
+BOX B11 | ON | x0 30.1 | y0 3.2 | x1 31.1 | y1 4.2 | base 0/0/0/0 | top 10.4/10.4/10.4/10.4 | Back Porch Post N
+BOX B12 | ON | x0 0.1 | y0 24.9 | x1 15.2 | y1 27.6 | base 0/0/0/0 | top 13/13/13/13 | House Bump
+BOX B13 | ON | x0 20.3 | y0 -14.3 | x1 42.1 | y1 -5.2 | base 0/0/0/0 | top 10.25/10.25/10.25/10.25 | Garage
+BOX B14 | ON | x0 22.7 | y0 -5.1 | x1 23.7 | y1 0.2 | base 0/0/0/0 | top 3.25/3.25/3.25/3.25 | Fence N
+BOX B15 | ON | x0 1.4 | y0 27.5 | x1 2.4 | y1 48.4 | base 0/0/0/0 | top 8/8/8/8 | Fence S`;
+
+// zt = top height at [NW, NE, SE, SW] corners. Unequal values give a tilted roof.
+// zb / zt = height at [NW, NE, SE, SW]. Tilt both together for a real sloped slab.
+const DEF_BOXES=()=>[
+ {id:'B1',name:'House',          x0:0, y0:0, x1:25,y1:25,zb:[0,0,0,0],       zt:[20,20,20,20],on:true},
+ {id:'B2',name:'Back porch roof',x0:25,y0:-1,x1:33,y1:8, zb:[10.2,7.7,7.7,10.2],zt:[10.7,8.2,8.2,10.7],on:true},
+ {id:'B3',name:'Front porch roof',x0:-6,y0:8,x1:0,y1:14, zb:[8,10,10,8],      zt:[8.5,10.5,10.5,8.5],on:true},
+ {id:'B4',name:'Deck',           x0:25,y0:9, x1:38,y1:26,zb:[0,0,0,0],        zt:[1.2,1.2,1.2,1.2],on:true}
+];
+const bilin=(arr,b,x,y)=>{
+  const u=clamp((x-b.x0)/(b.x1-b.x0),0,1), v=clamp((y-b.y0)/(b.y1-b.y0),0,1);
+  return arr[0]*(1-u)*(1-v)+arr[1]*u*(1-v)+arr[2]*u*v+arr[3]*(1-u)*v;
+};
+const topAt =(b,x,y)=>bilin(b.zt,b,x,y);
+const baseAt=(b,x,y)=>bilin(b.zb,b,x,y);
+const zmax=b=>Math.max(...b.zt), zmin=b=>Math.min(...b.zb);
+const flatT=b=>Math.max(...b.zt)-Math.min(...b.zt)<1e-6;
+const flatB=b=>Math.max(...b.zb)-Math.min(...b.zb)<1e-6;
+const isFlat=b=>flatT(b)&&flatB(b);
+const sloped=b=>!isFlat(b);
+const DEF_CAMS=()=>[
+ {id:'C1',lens:'duo',x:12.5,y:-1,z:11,a:270,t:15,name:'N wall Duo 3V',note:'Mid-wall flush',on:true},
+ {id:'C2',lens:'duo',x:12.5,y:26,z:11,a:90 ,t:15,name:'S wall Duo 3V',note:'Mid-wall flush',on:true},
+ {id:'C3',lens:'ptz',x:-6.5,y:11,z:8.5,a:126,t:15,name:'Front porch E1',note:'Fascia outer face',on:true},
+ {id:'C4',lens:'ptz',x:33.5,y:3.5,z:8,a:312,t:15,name:'Back porch E1',note:'Fascia outer face',on:true},
+ {id:'C5',lens:'ptz',x:-1.5,y:-1.5,z:10.5,a:135,t:15,name:'NW corner E1',note:'Corner bracket',on:true},
+ {id:'C6',lens:'ptz',x:26.5,y:26.5,z:10.5,a:309,t:15,name:'SE corner E1',note:'Corner bracket',on:true}
+];
+const DEF_PROP=()=>[[-18,-19],[46,-19],[46,51],[-18,51]];
+let prop=DEF_PROP(), selProp=false;
+let fence={on:true,h:8};
+// exact segment-vs-vertical-panel test along every boundary edge
+function hitsFence(ox,oy,oz,dx,dy,dz){
+  if(!fence.on||fence.h<=0)return false;
+  for(let i=0;i<prop.length;i++){
+    const [ax,ay]=prop[i], [bx,by]=prop[(i+1)%prop.length];
+    const ex=bx-ax, ey=by-ay;
+    const den=dx*ey-dy*ex;
+    if(Math.abs(den)<1e-9)continue;
+    const qx=ax-ox, qy=ay-oy;
+    const t=(qx*ey-qy*ex)/den, u=(qx*dy-qy*dx)/den;
+    if(t<=1e-4||t>=1-1e-4||u<0||u>1)continue;
+    const z=oz+dz*t;
+    if(z>=0&&z<=fence.h)return true;
+  }
+  return false;
+}
+// distance along a ray until it meets the fence (for frustum clipping)
+function fenceDist(ox,oy,oz,dx,dy,dz,max){
+  if(!fence.on||fence.h<=0)return max;
+  let best=max;
+  for(let i=0;i<prop.length;i++){
+    const [ax,ay]=prop[i], [bx,by]=prop[(i+1)%prop.length];
+    const ex=bx-ax, ey=by-ay;
+    const den=dx*ey-dy*ex;
+    if(Math.abs(den)<1e-9)continue;
+    const qx=ax-ox, qy=ay-oy;
+    const t=(qx*ey-qy*ex)/den, u=(qx*dy-qy*dx)/den;
+    if(t<=0.01||u<0||u>1)continue;
+    const z=oz+dz*t;
+    if(z>=0&&z<=fence.h&&t<best)best=t;
+  }
+  return best;
+}
+let cams=DEF_CAMS(), boxes=DEF_BOXES(), sel=null, selBox=null, mode='2d', splat=null, frusta=null, povMax=null;
+function polyArea(){
+  let a=0;
+  for(let i=0,j=prop.length-1;i<prop.length;j=i++)
+    a+=(prop[j][0]+prop[i][0])*(prop[j][1]-prop[i][1]);
+  return Math.abs(a/2);
+}
+function inProp(x,y){
+  let n=false;
+  for(let i=0,j=prop.length-1;i<prop.length;j=i++){
+    const [xi,yi]=prop[i],[xj,yj]=prop[j];
+    if((yi>y)!==(yj>y) && x<(xj-xi)*(y-yi)/(yj-yi)+xi) n=!n;
+  }
+  return n;
+}
+function inAnyBox(x,y){
+  return boxes.some(b=>b.on&&zmax(b)>4&&x>b.x0&&x<b.x1&&y>b.y0&&y<b.y1);
+}
+function propBounds(){
+  const xs=prop.map(p=>p[0]), ys=prop.map(p=>p[1]);
+  return {x0:Math.min(...xs),x1:Math.max(...xs),y0:Math.min(...ys),y1:Math.max(...ys)};
+}
+function loadMeasured(){
+  const {C,B,P}=decodeRaw(MEASURED);
+  if(C.length)cams=C;
+  if(B.length)boxes=B;
+  prop=P?P:DEF_PROP();
+}
+const colC=c=>PAL[cams.indexOf(c)%PAL.length];
+
+/* ---------------- 3D occlusion ---------------- */
+// slab test: does segment o->o+d hit the axis-aligned box?
+function segHitsBox(ox,oy,oz,dx,dy,dz,b){
+  let t0=0,t1=1;
+  const ax=[[ox,dx,b.x0,b.x1],[oy,dy,b.y0,b.y1],[oz,dz,b.z0,b.z1]];
+  for(const[o,d,lo,hi]of ax){
+    if(Math.abs(d)<1e-9){ if(o<lo||o>hi)return false; continue; }
+    let a=(lo-o)/d, z=(hi-o)/d;
+    if(a>z){const s=a;a=z;z=s;}
+    if(a>t0)t0=a; if(z<t1)t1=z;
+    if(t0>t1)return false;
+  }
+  return t1>1e-4 && t0<1-1e-4;
+}
+// where does the segment enter/exit the box footprint in xy?
+function xyRange(ox,oy,dx,dy,b){
+  let t0=0,t1=1;
+  for(const[o,d,lo,hi]of [[ox,dx,b.x0,b.x1],[oy,dy,b.y0,b.y1]]){
+    if(Math.abs(d)<1e-9){ if(o<lo||o>hi)return null; continue; }
+    let a=(lo-o)/d, z=(hi-o)/d; if(a>z){const s=a;a=z;z=s;}
+    if(a>t0)t0=a; if(z<t1)t1=z;
+    if(t0>t1)return null;
+  }
+  return [t0,t1];
+}
+function hitsWarped(c,dx,dy,dz,b){
+  const r=xyRange(c.x,c.y,dx,dy,b); if(!r)return false;
+  const N=22;
+  for(let i=0;i<=N;i++){
+    const t=r[0]+(r[1]-r[0])*i/N;
+    if(t<=1e-4||t>=1-1e-4)continue;
+    const px=c.x+dx*t, py=c.y+dy*t, pz=c.z+dz*t;
+    if(pz>=baseAt(b,px,py) && pz<=topAt(b,px,py))return true;
+  }
+  return false;
+}
+function blocked(c,x,y,tz){
+  if(!$('tOcc').checked)return false;
+  const dx=x-c.x, dy=y-c.y, dz=tz-c.z;
+  for(const b of boxes){
+    if(!b.on)continue;
+    // a camera inside a box's own volume isn't blocked by it (mounted under a roof)
+    if(c.x>b.x0-.02&&c.x<b.x1+.02&&c.y>b.y0-.02&&c.y<b.y1+.02&&
+       c.z>baseAt(b,c.x,c.y)-.02&&c.z<topAt(b,c.x,c.y)+.02)continue;
+    if(isFlat(b)){
+      if(segHitsBox(c.x,c.y,c.z,dx,dy,dz,{x0:b.x0,y0:b.y0,x1:b.x1,y1:b.y1,z0:b.zb[0],z1:b.zt[0]}))return true;
+    } else if(hitsWarped(c,dx,dy,dz,b))return true;
+  }
+  if(hitsFence(c.x,c.y,c.z,dx,dy,dz))return true;
+  return false;
+}
+// 0 none, 1 detection, 2 face-ID
+function qual(c,x,y,tz,aim,tlt){
+  const L=lensOf(c);
+  const dx=x-c.x, dy=y-c.y;
+  const hd=Math.hypot(dx,dy);
+  if(hd>L.r)return 0;
+  const az=deg(Math.atan2(dy,dx));
+  if(Math.abs(((az-aim+540)%360)-180)>L.f/2)return 0;
+  const elv=deg(Math.atan2(c.z-tz,Math.max(hd,1e-6)));   // + = looking down
+  if(Math.abs(elv-tlt)>L.vf/2)return 0;
+  if(blocked(c,x,y,tz))return 0;
+  return hd<=20?2:1;
+}
+// every stop in the circuit: home first, then keyframes
+function stops(c){
+  const home={a:c.a,t:c.t||0,d:c.hd||20};
+  if((c.lens||'ptz')!=='ptz'||!c.tour||!c.tour.length)return [home];
+  return [home,...c.tour];
+}
+const cycle=c=>stops(c).reduce((s,k)=>s+(k.d||0),0);
+// best quality anywhere in the circuit, plus the share of the cycle it's covered
+function swept(c,x,y,tz){
+  const S=stops(c); let q=0,seen=0,tot=0;
+  for(const k of S){
+    const v=qual(c,x,y,tz,k.a,k.t);
+    tot+=k.d||0;
+    if(v){seen+=k.d||0; if(v>q)q=v;}
+  }
+  return {q,frac:tot?seen/tot:0};
+}
+function quality(c,x,y,tz){
+  if($('tTour')&&$('tTour').checked)return swept(c,x,y,tz).q;
+  return qual(c,x,y,tz,c.a,c.t||0);
+}
+
+/* ---------------- world <-> screen ---------------- */
+const VIEW={x0:-34,y0:-30,w:100,h:88};
+let W=900,H=700, zoom2=1, ctrX=VIEW.x0+VIEW.w/2, ctrY=VIEW.y0+VIEW.h/2;
+function baseScale(){return Math.min(W/VIEW.w,H/VIEW.h);}
+function fit(){
+  const st=$('stage');
+  W=Math.floor((st.clientWidth||900)*(mode==='split'?0.5:1)); H=st.clientHeight||700;
+  const s=baseScale()*zoom2;
+  return {s,ox:W/2-ctrX*s,oy:H/2-ctrY*s};
+}
+function resetView(){
+  if(mode==='3d'){zoom=1;panX=0;panY=0;az=-38;elv=32;}
+  else {zoom2=1;ctrX=VIEW.x0+VIEW.w/2;ctrY=VIEW.y0+VIEW.h/2;}
+  render();}
+let T=fit();
+const wx=x=>x*T.s+T.ox, wy=y=>y*T.s+T.oy;
+const sx=p=>(p-T.ox)/T.s, sy=p=>(p-T.oy)/T.s;
+
+/* ---------------- coverage raster ---------------- */
+const cov=$('cov'), cx2=cov.getContext('2d');
+function paintCoverage(coarse){
+  cov.width=W; cov.height=H;
+  cx2.clearRect(0,0,W,H);
+  const tz=parseFloat($('tz').value);
+  const step=coarse?2.2:1.1;                       // world ft per sample
+  const px=Math.max(2,Math.ceil(step*T.s));
+  const showId=$('tId').checked;
+  const live=cams.filter(c=>c.on);
+  const wx0=sx(0),wy0=sy(0),wx1=sx(W),wy1=sy(H);
+  for(let gx=wx0;gx<wx1;gx+=step){
+    for(let gy=wy0;gy<wy1;gy+=step){
+      let best=0,bc=null;
+      for(const c of live){
+        if(sel&&sel!==c.id)continue;
+        const q=quality(c,gx,gy,tz);
+        if(q>best){best=q;bc=c;}
+      }
+      if(!best)continue;
+      cx2.fillStyle=colC(bc);
+      cx2.globalAlpha=(best===2&&showId)?0.34:0.15;
+      cx2.fillRect(wx(gx),wy(gy),px,px);
+    }
+  }
+  cx2.globalAlpha=1;
+}
+
+/* ------- vector cones: 3D-accurate visibility, drawn as crisp polygons ------- */
+// for one azimuth, return the visible distance intervals at the target height
+function intervals(c,azm,tz,lvl,dstep){
+  const L=lensOf(c), a=rad(azm), ca=Math.cos(a), sa=Math.sin(a);
+  const out=[]; let open=null;
+  for(let d=1;d<=L.r;d+=dstep){
+    const q=qual(c,c.x+d*ca,c.y+d*sa,tz,c.a,c.t||0);
+    const ok=(lvl===2)?(q===2):(q>=1);
+    if(ok&&!open)open=d;
+    else if(!ok&&open){out.push([open,d-dstep]);open=null;}
+  }
+  if(open)out.push([open,L.r]);
+  return out;
+}
+// merge adjacent azimuths into smooth sector polygons
+function conePaths(c,tz,lvl,astep,dstep){
+  const L=lensOf(c), a0=c.a-L.f/2, a1=c.a+L.f/2;
+  const cols=[];
+  for(let a=a0;a<=a1+1e-6;a+=astep)cols.push({a,iv:intervals(c,a,tz,lvl,dstep)});
+  const paths=[]; const used=cols.map(col=>col.iv.map(()=>false));
+  for(let i=0;i<cols.length;i++){
+    for(let j=0;j<cols[i].iv.length;j++){
+      if(used[i][j])continue;
+      const run=[{a:cols[i].a,iv:cols[i].iv[j]}]; used[i][j]=true;
+      let cur=cols[i].iv[j];
+      for(let k=i+1;k<cols.length;k++){
+        let bi=-1,bd=1e9;
+        cols[k].iv.forEach((v,m)=>{
+          if(used[k][m])return;
+          const dd=Math.abs(v[0]-cur[0])+Math.abs(v[1]-cur[1]);
+          if(dd<bd){bd=dd;bi=m;}
+        });
+        if(bi<0||bd>6)break;
+        used[k][bi]=true; cur=cols[k].iv[bi];
+        run.push({a:cols[k].a,iv:cur});
+      }
+      if(run.length<2)continue;
+      const outer=run.map(r=>[c.x+r.iv[1]*Math.cos(rad(r.a)),c.y+r.iv[1]*Math.sin(rad(r.a))]);
+      const inner=run.slice().reverse().map(r=>[c.x+r.iv[0]*Math.cos(rad(r.a)),c.y+r.iv[0]*Math.sin(rad(r.a))]);
+      const pts=[...outer,...inner];
+      paths.push('M '+pts.map(([x,y])=>`${wx(x).toFixed(1)} ${wy(y).toFixed(1)}`).join(' L ')+' Z');
+    }
+  }
+  return paths;
+}
+
+/* ---------------- plan view ---------------- */
+const svg=$('plan');
+function drawPlan(){
+  svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
+  svg.setAttribute('width',W); svg.setAttribute('height',H);
+  svg.textContent='';
+  const g=el('g'); svg.append(g);
+  if($('tGrid').checked){
+    const a=Math.floor(sx(0)/5)*5,bb=Math.ceil(sx(W)/5)*5;
+    const c0=Math.floor(sy(0)/5)*5,d0=Math.ceil(sy(H)/5)*5;
+    for(let v=a;v<=bb;v+=5)g.append(el('line',{class:'gridline',x1:wx(v),y1:0,x2:wx(v),y2:H}));
+    for(let v=c0;v<=d0;v+=5)g.append(el('line',{class:'gridline',x1:0,y1:wy(v),x2:W,y2:wy(v)}));
+  }
+  // property boundary
+  {
+    const dfs=el('defs');
+    const gp=el('pattern',{id:'grass2d',width:10,height:10,patternUnits:'userSpaceOnUse'});
+    gp.append(el('rect',{width:10,height:10,fill:'#22301F'}));
+    gp.append(el('path',{d:'M2 8 l1.5 -4 M6 9 l1 -4',stroke:'#2E4429','stroke-width':.9,
+      'stroke-linecap':'round'}));
+    dfs.append(gp); g.append(dfs);
+    g.append(el('polygon',{points:prop.map(([x,y])=>`${wx(x)},${wy(y)}`).join(' '),
+      fill:'url(#grass2d)',stroke:'none'}));
+    [...boxes.filter(b=>b.on).map(shadowOf),...fenceShadows()].forEach(poly=>{
+      g.append(el('polygon',{points:poly.map(([x,y])=>`${wx(x)},${wy(y)}`).join(' '),
+        fill:'#12200F','fill-opacity':.5,stroke:'none'}));
+    });
+    const pts=prop.map(([x,y])=>`${wx(x)},${wy(y)}`).join(' ');
+    g.append(el('polygon',{points:pts,fill:'none',stroke:selProp?'#E9E5DB':'#4A5462',
+      stroke:selProp?'#E9E5DB':(fence.on?MAT.wood:'#4A5462'),
+      'stroke-width':(fence.on?3.4:1.4)*(selProp?1.3:1),
+      'stroke-dasharray':fence.on?'':'8 5'}));
+    if(selProp){
+      prop.forEach(([x,y],i)=>{
+        const h=el('circle',{cx:wx(x),cy:wy(y),r:7,fill:'#0F1319',stroke:'#E9E5DB',
+          'stroke-width':1.8,style:'cursor:move'});
+        h.dataset.vert=i; g.append(h);
+      });
+      prop.forEach(([x,y],i)=>{
+        const [nx,ny]=prop[(i+1)%prop.length];
+        const mx=(x+nx)/2, my=(y+ny)/2;
+        const h=el('g',{style:'cursor:copy'}); h.dataset.mid=i;
+        h.append(el('circle',{cx:wx(mx),cy:wy(my),r:9,fill:'transparent'}));
+        h.append(el('circle',{cx:wx(mx),cy:wy(my),r:5,fill:'#0F1319',stroke:'#7C8593','stroke-width':1.3}));
+        h.append(el('path',{d:`M ${wx(mx)-2.5} ${wy(my)} h5 M ${wx(mx)} ${wy(my)-2.5} v5`,
+          stroke:'#B9C0C9','stroke-width':1.2}));
+        g.append(h);
+      });
+    }
+  }
+  // coverage cones
+  if($('rmode').value==='cones'){
+    const tz=parseFloat($('tz').value);
+    const astep=coarse?3:1.25, dstep=coarse?1.6:0.8;
+    cams.forEach(c=>{
+      if(!c.on)return;
+      const k=colC(c), dim=(sel&&sel!==c.id)?.13:1;
+      const gc=el('g'); gc.style.opacity=dim; gc.style.pointerEvents='none';
+      if($('tTour').checked&&(c.lens||'ptz')==='ptz'&&c.tour&&c.tour.length){
+        const save={a:c.a,t:c.t};
+        c.tour.forEach(kf=>{
+          c.a=kf.a; c.t=kf.t;
+          conePaths(c,tz,1,coarse?4:2,coarse?2:1.2).forEach(d=>
+            gc.append(el('path',{d,fill:k,'fill-opacity':.07,stroke:k,
+              'stroke-opacity':.35,'stroke-width':.7,'stroke-dasharray':'5 4'})));
+        });
+        c.a=save.a; c.t=save.t;
+      }
+      conePaths(c,tz,1,astep,dstep).forEach(d=>
+        gc.append(el('path',{d,fill:k,'fill-opacity':.14,stroke:k,
+          'stroke-opacity':.5,'stroke-width':.9,'stroke-linejoin':'round'})));
+      if($('tId').checked)
+        conePaths(c,tz,2,astep,dstep).forEach(d=>
+          gc.append(el('path',{d,fill:k,'fill-opacity':.24,stroke:'none'})));
+      g.append(gc);
+    });
+  }
+  // occluder boxes
+  boxes.forEach(b=>{
+    const isSel=selBox===b.id;
+    const tall=zmax(b)-zmin(b);
+    g.append(el('rect',{x:wx(b.x0),y:wy(b.y0),width:(b.x1-b.x0)*T.s,height:(b.y1-b.y0)*T.s,
+      fill:b.on?(tall>6?MAT.wall:(/deck/i.test(b.name)?MAT.deck:MAT.wood)):'transparent',
+      'fill-opacity':b.on?(tall>6?1:.85):.2,
+      stroke:isSel?'#E9E5DB':'#4A5462','stroke-width':isSel?1.6:.9,
+      'stroke-dasharray':b.on?'':'4 3'}));
+    const cxm=wx((b.x0+b.x1)/2), cym=wy((b.y0+b.y1)/2);
+    g.append(txt({x:cxm,y:cym,'text-anchor':'middle','font-family':'var(--mono)','font-size':9,
+      fill:tall>6?'#5B6472':'#97A0AD'},b.name));
+    g.append(txt({x:cxm,y:cym+11,'text-anchor':'middle','font-family':'var(--mono)','font-size':8,
+      fill:tall>6?'#8F959D':'#7C8593'},
+      isFlat(b)?`${b.zb[0]}–${b.zt[0]} ft`:`${zmin(b)}–${zmax(b)} ft sloped`));
+    if(isSel){
+      const mh=el('g',{style:'cursor:move'}); mh.dataset.box=b.id; mh.dataset.grab='move';
+      mh.append(el('circle',{cx:cxm,cy:cym+22,r:13,fill:'transparent'}));
+      mh.append(el('circle',{cx:cxm,cy:cym+22,r:7,fill:'#0F1319',stroke:'#E9E5DB','stroke-width':1.5}));
+      mh.append(el('path',{d:`M ${cxm-3.5} ${cym+22} h7 M ${cxm} ${cym+18.5} v7`,
+        stroke:'#E9E5DB','stroke-width':1.3}));
+      g.append(mh);
+      [[b.x0,b.y0,'nw'],[b.x1,b.y0,'ne'],[b.x1,b.y1,'se'],[b.x0,b.y1,'sw']].forEach(([hx,hy,k])=>{
+        const h=el('rect',{x:wx(hx)-5,y:wy(hy)-5,width:10,height:10,fill:'#0F1319',
+          stroke:'#E9E5DB','stroke-width':1.4,style:'cursor:nwse-resize'});
+        h.dataset.box=b.id; h.dataset.corner=k; g.append(h);
+      });
+    }
+  });
+  // cameras
+  cams.forEach(c=>{
+    const k=colC(c), dim=(sel&&sel!==c.id)?.3:1;
+    const gg=el('g'); gg.style.opacity=c.on?dim:.22;
+    const ax=wx(c.x+7*Math.cos(rad(c.a))), ay=wy(c.y+7*Math.sin(rad(c.a)));
+    gg.append(el('line',{x1:wx(c.x),y1:wy(c.y),x2:ax,y2:ay,stroke:k,'stroke-width':1.6}));
+    const aim=el('g',{style:'cursor:grab'}); aim.dataset.cam=c.id; aim.dataset.mode='aim';
+    aim.append(el('circle',{cx:ax,cy:ay,r:11,fill:'transparent'}));
+    aim.append(el('circle',{cx:ax,cy:ay,r:4,fill:k}));
+    const mv=el('g',{style:'cursor:move'}); mv.dataset.cam=c.id; mv.dataset.mode='move';
+    mv.append(el('circle',{cx:wx(c.x),cy:wy(c.y),r:12,fill:'transparent'}));
+    mv.append(el('circle',{cx:wx(c.x),cy:wy(c.y),r:5.5,fill:'#0F1319',stroke:k,'stroke-width':2}));
+    gg.append(aim,mv);
+    gg.append(txt({x:wx(c.x),y:wy(c.y)-11,'text-anchor':'middle',fill:k,
+      'font-family':'var(--mono)','font-size':10,'font-weight':500},c.id));
+    g.append(gg);
+  });
+  // compass
+  const nx=wx(-29),ny=wy(-24);
+  g.append(el('line',{x1:nx,y1:ny+14,x2:nx,y2:ny-14,stroke:'#5C6673','stroke-width':1.2}));
+  g.append(el('path',{d:`M ${nx} ${ny-18} l 5 10 l -10 0 Z`,fill:'#8A9099'}));
+  g.append(txt({x:nx,y:ny+27,'text-anchor':'middle','font-family':'var(--mono)','font-size':9,
+    fill:'#6E7783'},'N / FRONT ←'));
+}
+
+/* ------- splatter: which cameras actually see each patch of ground / structure ------- */
+// visibility of an arbitrary 3D point, ignoring the surface it sits on
+function seesPoint(c,x,y,z,skip){
+  const L=lensOf(c);
+  const dx=x-c.x, dy=y-c.y, dz=z-c.z, hd=Math.hypot(dx,dy);
+  if(hd>L.r||hd<0.3)return 0;
+  if(Math.abs(((deg(Math.atan2(dy,dx))-c.a+540)%360)-180)>L.f/2)return 0;
+  const e2=deg(Math.atan2(c.z-z,hd));
+  if(Math.abs(e2-(c.t||0))>L.vf/2)return 0;
+  if($('tOcc').checked){
+    for(const b of boxes){
+      if(!b.on||b===skip)continue;
+      if(c.x>b.x0-.02&&c.x<b.x1+.02&&c.y>b.y0-.02&&c.y<b.y1+.02&&
+         c.z>baseAt(b,c.x,c.y)-.02&&c.z<topAt(b,c.x,c.y)+.02)continue;
+      if(isFlat(b)){
+        if(segHitsBox(c.x,c.y,c.z,dx,dy,dz,{x0:b.x0,y0:b.y0,x1:b.x1,y1:b.y1,z0:b.zb[0],z1:b.zt[0]}))return 0;
+      } else if(hitsWarped(c,dx,dy,dz,b))return 0;
+    }
+    if(hitsFence(c.x,c.y,c.z,dx,dy,dz))return 0;
+  }
+  return hd<=20?2:1;
+}
+function bestAt(x,y,z,skip,nrm){
+  let q=0,c=null;
+  for(const cam of cams){
+    if(!cam.on)continue;
+    if(sel&&sel!==cam.id)continue;
+    // backface cull: the camera must be on the outward side of the surface
+    if(nrm){
+      const d=(cam.x-x)*nrm[0]+(cam.y-y)*nrm[1]+(cam.z-z)*nrm[2];
+      if(d<=0.05)continue;
+    }
+    const v=seesPoint(cam,x,y,z,skip);
+    if(v>q){q=v;c=cam;}
+  }
+  return {q,c};
+}
+const lerp3=(A,B,t)=>[A[0]+(B[0]-A[0])*t,A[1]+(B[1]-A[1])*t,A[2]+(B[2]-A[2])*t];
+function quadAt(P,u,v){ return lerp3(lerp3(P[0],P[1],u), lerp3(P[3],P[2],u), v); }
+
+function buildSplat(){
+  const out=[];
+  const add=(P,skip,nrm)=>{
+    const span=Math.max(
+      Math.hypot(P[1][0]-P[0][0],P[1][1]-P[0][1],P[1][2]-P[0][2]),
+      Math.hypot(P[3][0]-P[0][0],P[3][1]-P[0][1],P[3][2]-P[0][2]));
+    const N=clamp(Math.round(span/1.6),1,14);
+    for(let i=0;i<N;i++)for(let j=0;j<N;j++){
+      const c0=quadAt(P,i/N,j/N), c1=quadAt(P,(i+1)/N,j/N),
+            c2=quadAt(P,(i+1)/N,(j+1)/N), c3=quadAt(P,i/N,(j+1)/N);
+      const m=[(c0[0]+c2[0])/2,(c0[1]+c2[1])/2,(c0[2]+c2[2])/2];
+      const OFF=0.18;
+      const r=bestAt(m[0]+nrm[0]*OFF,m[1]+nrm[1]*OFF,m[2]+nrm[2]*OFF,null,nrm);
+      if(!r.q)continue;
+      out.push({p:[c0,c1,c2,c3],col:colC(r.c),a:r.q===2?0.5:0.26});
+    }
+  };
+  // ground, limited to the property
+  const PB=propBounds(), st=2.5;
+  for(let x=PB.x0;x<PB.x1;x+=st)for(let y=PB.y0;y<PB.y1;y+=st){
+    if(!inProp(x+st/2,y+st/2))continue;
+    const r=bestAt(x+st/2,y+st/2,0.05,null);
+    if(!r.q)continue;
+    out.push({p:[[x,y,0],[x+st,y,0],[x+st,y+st,0],[x,y+st,0]],
+      col:colC(r.c),a:r.q===2?0.42:0.2});
+  }
+  // structure surfaces
+  boxes.forEach(b=>{
+    if(!b.on)return;
+    const T=TC(b), B2=BC(b);
+    add([T[0],T[1],T[2],T[3]],b,[0,0,1]);                       // roof
+    add([[b.x0,b.y0,B2[0][2]],[b.x1,b.y0,B2[1][2]],[b.x1,b.y0,T[1][2]],[b.x0,b.y0,T[0][2]]],b,[0,-1,0]);
+    add([[b.x1,b.y1,B2[2][2]],[b.x0,b.y1,B2[3][2]],[b.x0,b.y1,T[3][2]],[b.x1,b.y1,T[2][2]]],b,[0,1,0]);
+    add([[b.x0,b.y1,B2[3][2]],[b.x0,b.y0,B2[0][2]],[b.x0,b.y0,T[0][2]],[b.x0,b.y1,T[3][2]]],b,[-1,0,0]);
+    add([[b.x1,b.y0,B2[1][2]],[b.x1,b.y1,B2[2][2]],[b.x1,b.y1,T[2][2]],[b.x1,b.y0,T[1][2]]],b,[1,0,0]);
+  });
+  return out;
+}
+
+/* ------- frustum solids: the actual visible volume, clipped by structures ------- */
+function insideBox(b,x,y,z){
+  return x>b.x0&&x<b.x1&&y>b.y0&&y<b.y1&&z>=baseAt(b,x,y)&&z<=topAt(b,x,y);
+}
+function castRay3(c,azm,elv2,maxR){
+  const a=rad(azm), e=rad(elv2);
+  const dx=Math.cos(a)*Math.cos(e), dy=Math.sin(a)*Math.cos(e), dz=-Math.sin(e);
+  let lim=maxR;
+  if(dz<-1e-6)lim=Math.min(lim,(0-c.z)/dz);            // ground plane
+  if($('tOcc').checked){
+    const step=0.6;
+    for(let t=0.5;t<lim;t+=step){
+      const x=c.x+dx*t, y=c.y+dy*t, z=c.z+dz*t;
+      let hit=false;
+      for(const b of boxes){
+        if(!b.on)continue;
+        if(insideBox(b,c.x,c.y,c.z))continue;          // mounted inside it
+        if(insideBox(b,x,y,z)){hit=true;break;}
+      }
+      if(hit){lim=Math.max(0.5,t-step*0.5);break;}
+    }
+    lim=Math.min(lim,fenceDist(c.x,c.y,c.z,dx,dy,dz,lim));
+  }
+  return {d:lim,p:[c.x+dx*lim,c.y+dy*lim,c.z+dz*lim]};
+}
+function buildFrusta(){
+  const out=[];
+  cams.forEach(c=>{
+    if(!c.on)return;
+    if(sel&&sel!==c.id)return;
+    const L=lensOf(c), k=colC(c);
+    const list=($('tTour').checked)?stops(c):[{a:c.a,t:c.t||0,d:1}];
+    list.forEach((st,si)=>{
+      const NA=Math.max(6,Math.round(L.f/12)), NV=5;
+      const grid=[];
+      for(let i=0;i<=NA;i++){
+        const azm=st.a-L.f/2+L.f*i/NA;
+        const col=[];
+        for(let j=0;j<=NV;j++){
+          const e2=st.t-L.vf/2+L.vf*j/NV;
+          col.push(castRay3(c,azm,e2,L.r).p);
+        }
+        grid.push(col);
+      }
+      const alpha=si===0?0.16:0.07;
+      // far cap
+      for(let i=0;i<NA;i++)for(let j=0;j<NV;j++)
+        out.push({p:[grid[i][j],grid[i+1][j],grid[i+1][j+1],grid[i][j+1]],col:k,a:alpha});
+      // sides, top and bottom: apex to the outer edges
+      const apex=[c.x,c.y,c.z];
+      for(let j=0;j<NV;j++){
+        out.push({p:[apex,grid[0][j],grid[0][j+1],apex],col:k,a:alpha*0.8});
+        out.push({p:[apex,grid[NA][j],grid[NA][j+1],apex],col:k,a:alpha*0.8});
+      }
+      for(let i=0;i<NA;i++){
+        out.push({p:[apex,grid[i][0],grid[i+1][0],apex],col:k,a:alpha*0.55});
+        out.push({p:[apex,grid[i][NV],grid[i+1][NV],apex],col:k,a:alpha*0.55});
+      }
+    });
+  });
+  return out;
+}
+
+/* ---------------- materials, sun and shadows ---------------- */
+const MAT={
+  sky0:'#4A7FB5', sky1:'#9CC4E4',
+  grass:'#4E7A3E', grassLit:'#5E8C48', grassDark:'#3C6031',
+  wall:'#F2EFE7', roof:'#D8D2C6', wood:'#7A5535', woodDark:'#5E4128',
+  deck:'#8B6A45', shadow:'#243A22'
+};
+// sun sits over the north-east, ~40 degrees up
+const SUN=(()=>{const v=[0.52,-0.52,0.68];
+  const l=Math.hypot(...v); return v.map(q=>q/l);})();
+function shade(n,base){
+  const d=Math.max(0,n[0]*SUN[0]+n[1]*SUN[1]+n[2]*SUN[2]);
+  const k=0.42+0.58*d;
+  const r=parseInt(base.slice(1,3),16),g=parseInt(base.slice(3,5),16),b=parseInt(base.slice(5,7),16);
+  const f=v=>Math.round(Math.min(255,v*k));
+  return `rgb(${f(r)},${f(g)},${f(b)})`;
+}
+function normalOf(P){
+  if(P.length<3)return [0,0,1];
+  const u=[P[1][0]-P[0][0],P[1][1]-P[0][1],P[1][2]-P[0][2]];
+  const v=[P[2][0]-P[0][0],P[2][1]-P[0][1],P[2][2]-P[0][2]];
+  const n=[u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]];
+  const l=Math.hypot(...n)||1;
+  return n.map(q=>q/l);
+}
+function outNormal(b,W3){
+  let n=normalOf(W3);
+  const fc=[W3.reduce((s,q)=>s+q[0],0)/W3.length,
+            W3.reduce((s,q)=>s+q[1],0)/W3.length,
+            W3.reduce((s,q)=>s+q[2],0)/W3.length];
+  const bc=[(b.x0+b.x1)/2,(b.y0+b.y1)/2,
+            (Math.min(...b.zb)+Math.max(...b.zt))/2];
+  const d=(fc[0]-bc[0])*n[0]+(fc[1]-bc[1])*n[1]+(fc[2]-bc[2])*n[2];
+  return d<0?n.map(q=>-q):n;
+}
+const facesCamera=(c,b,W3)=>{
+  const n=outNormal(b,W3);
+  const fc=[W3.reduce((s,q)=>s+q[0],0)/W3.length,
+            W3.reduce((s,q)=>s+q[1],0)/W3.length,
+            W3.reduce((s,q)=>s+q[2],0)/W3.length];
+  return (c.x-fc[0])*n[0]+(c.y-fc[1])*n[1]+(c.z-fc[2])*n[2] > 0;
+};
+const matOf=b=>/roof/i.test(b.name)?MAT.roof
+  :/deck/i.test(b.name)?MAT.deck
+  :/fence|post|wall/i.test(b.name)?MAT.wood:MAT.wall;
+// drop a point onto the ground along the sun ray
+const dropSun=p=>[p[0]-SUN[0]*(p[2]/SUN[2]), p[1]-SUN[1]*(p[2]/SUN[2]), 0];
+function hull(pts){
+  const P=pts.slice().sort((a,b)=>a[0]-b[0]||a[1]-b[1]);
+  const cross=(o,a,b)=>(a[0]-o[0])*(b[1]-o[1])-(a[1]-o[1])*(b[0]-o[0]);
+  const lo=[],up=[];
+  for(const p of P){while(lo.length>1&&cross(lo[lo.length-2],lo[lo.length-1],p)<=0)lo.pop();lo.push(p);}
+  for(let i=P.length-1;i>=0;i--){const p=P[i];
+    while(up.length>1&&cross(up[up.length-2],up[up.length-1],p)<=0)up.pop();up.push(p);}
+  lo.pop();up.pop();
+  return lo.concat(up);
+}
+function shadowOf(b){
+  const pts=[];
+  XY(b).forEach(([x,y],i)=>{pts.push([x,y]);pts.push(dropSun([x,y,b.zt[i]]).slice(0,2));});
+  return hull(pts);
+}
+function fenceShadows(){
+  if(!fence.on||fence.h<=0)return [];
+  const out=[];
+  for(let i=0;i<prop.length;i++){
+    const [ax,ay]=prop[i],[bx,by]=prop[(i+1)%prop.length];
+    const a2=dropSun([ax,ay,fence.h]), b2=dropSun([bx,by,fence.h]);
+    out.push([[ax,ay],[bx,by],[b2[0],b2[1]],[a2[0],a2[1]]]);
+  }
+  return out;
+}
+
+/* ---------------- camera POV ---------------- */
+function camBasis(c,aim,tlt){
+  const a=rad(aim), t=rad(tlt);
+  const dir=[Math.cos(a)*Math.cos(t), Math.sin(a)*Math.cos(t), -Math.sin(t)];
+  // screen-right is world-up crossed with the view direction
+  let r=[ -dir[1], dir[0], 0 ];
+  const rl=Math.hypot(r[0],r[1])||1; r=[r[0]/rl,r[1]/rl,0];
+  const u=[ r[1]*dir[2]-r[2]*dir[1], r[2]*dir[0]-r[0]*dir[2], r[0]*dir[1]-r[1]*dir[0] ];
+  return {dir,r,u:[-u[0],-u[1],-u[2]]};
+}
+const toCam=(c,B,p)=>{
+  const v=[p[0]-c.x,p[1]-c.y,p[2]-c.z];
+  return [v[0]*B.r[0]+v[1]*B.r[1]+v[2]*B.r[2],
+          v[0]*B.u[0]+v[1]*B.u[1]+v[2]*B.u[2],
+          v[0]*B.dir[0]+v[1]*B.dir[1]+v[2]*B.dir[2]];
+};
+// clip a camera-space polygon against a half-space given by a signed distance
+function clipPlane(poly,fn){
+  if(!poly.length)return poly;
+  const out=[];
+  for(let i=0;i<poly.length;i++){
+    const A=poly[i], Bp=poly[(i+1)%poly.length];
+    const da=fn(A), db=fn(Bp);
+    if(da>=0)out.push(A);
+    if((da>=0)!==(db>=0)){
+      const t=da/(da-db);
+      out.push([A[0]+(Bp[0]-A[0])*t, A[1]+(Bp[1]-A[1])*t, A[2]+(Bp[2]-A[2])*t]);
+    }
+  }
+  return out;
+}
+// near plane plus the two sides of the horizontal field of view.
+// without the side planes a point can sit in front of the lens but outside
+// the FOV, and its edge stretches back across the frame.
+function clipWedge(poly,halfFov){
+  const h=rad(Math.min(halfFov,89.5)), ch=Math.cos(h), sh=Math.sin(h);
+  let q=clipPlane(poly,p=>p[2]-0.25);
+  q=clipPlane(q,p=> p[0]*ch+p[2]*sh);
+  q=clipPlane(q,p=>-p[0]*ch+p[2]*sh);
+  return q;
+}
+function povScreen(c,pt,VW,VH){
+  const L=lensOf(c);
+  const phi=Math.atan2(pt[0],pt[2]);
+  const rr=Math.hypot(pt[0],pt[2])||1e-6;
+  const h=pt[1]/rr;
+  return [VW/2 + (phi/rad(L.f/2))*(VW/2),
+          VH/2 - (h/Math.tan(rad(L.vf/2)))*(VH/2)];
+}
+function povPoly(c,B,world,VW,VH,sub){
+  // straight world edges are curves in a cylindrical image, so subdivide first
+  const n=sub===undefined?8:sub;
+  const W=[];
+  for(let i=0;i<world.length;i++){
+    const A=world[i], Bp=world[(i+1)%world.length];
+    for(let k=0;k<n;k++)
+      W.push([A[0]+(Bp[0]-A[0])*k/n, A[1]+(Bp[1]-A[1])*k/n, A[2]+(Bp[2]-A[2])*k/n]);
+  }
+  const cl=clipWedge(W.map(p=>toCam(c,B,p)),lensOf(c).f/2);
+  if(cl.length<3)return null;
+  // vertical extent is not a plane in a cylindrical image, so clip the
+  // projected polygon to the frame instead — stops off-screen corners
+  // dragging a stretched shape across the view
+  let pts=cl.map(p=>povScreen(c,p,VW,VH));
+  const M=6;
+  pts=clip2D(pts,q=>q[1]+M);
+  pts=clip2D(pts,q=>VH+M-q[1]);
+  pts=clip2D(pts,q=>q[0]+M);
+  pts=clip2D(pts,q=>VW+M-q[0]);
+  if(pts.length<3)return null;
+  return {pts,d:cl.reduce((s,p)=>s+p[2],0)/cl.length};
+}
+function clip2D(poly,fn){
+  if(!poly.length)return poly;
+  const out=[];
+  for(let i=0;i<poly.length;i++){
+    const A=poly[i], Bp=poly[(i+1)%poly.length];
+    const da=fn(A), db=fn(Bp);
+    if(da>=0)out.push(A);
+    if((da>=0)!==(db>=0)){
+      const t=da/(da-db);
+      out.push([A[0]+(Bp[0]-A[0])*t, A[1]+(Bp[1]-A[1])*t]);
+    }
+  }
+  return out;
+}
+function drawPOV(c,svgEl,VW,VH){
+  svgEl.textContent='';
+  svgEl.setAttribute('viewBox',`0 0 ${VW} ${VH}`);
+  const B=camBasis(c,c.a,c.t||0);
+  const items=[];
+  // sky
+  const dfs=el('defs');
+  const sg=el('linearGradient',{id:'sky'+c.id,x1:0,y1:0,x2:0,y2:1});
+  sg.append(el('stop',{offset:'0%','stop-color':MAT.sky0}),
+            el('stop',{offset:'100%','stop-color':MAT.sky1}));
+  const gp2=el('pattern',{id:'gr'+c.id,width:14,height:14,patternUnits:'userSpaceOnUse'});
+  gp2.append(el('rect',{width:14,height:14,fill:MAT.grass}));
+  gp2.append(el('path',{d:'M2 12 l2 -5 M7 13 l1.5 -6 M11 11 l2 -4',
+    stroke:MAT.grassLit,'stroke-width':1,'stroke-linecap':'round','stroke-opacity':.75}));
+  dfs.append(sg,gp2); svgEl.append(dfs);
+  svgEl.append(el('rect',{x:0,y:0,width:VW,height:VH,fill:`url(#sky${c.id})`}));
+  // ground: the property polygon, edges subdivided so the curvature shows
+  const g=[];
+  for(let i=0;i<prop.length;i++){
+    const [x0,y0]=prop[i],[x1,y1]=prop[(i+1)%prop.length];
+    for(let k=0;k<12;k++)g.push([x0+(x1-x0)*k/12, y0+(y1-y0)*k/12, 0]);
+  }
+  const gp=povPoly(c,B,g,VW,VH,1);
+  if(gp)items.push({d:1e6,e:el('polygon',{points:gp.pts.map(q=>`${q[0].toFixed(1)},${q[1].toFixed(1)}`).join(' '),
+    fill:`url(#gr${c.id})`,stroke:MAT.grassDark,'stroke-width':1})});
+  // shadows on the grass
+  const hous=boxes.filter(b=>b.on&&c.x>b.x0&&c.x<b.x1&&c.y>b.y0&&c.y<b.y1&&
+    c.z>=baseAt(b,c.x,c.y)-0.02&&c.z<=topAt(b,c.x,c.y)+0.02);
+  [...boxes.filter(b=>b.on&&!hous.includes(b)).map(shadowOf),...fenceShadows()].forEach(poly=>{
+    const P=povPoly(c,B,poly.map(([x,y])=>[x,y,0.02]),VW,VH);
+    if(P)items.push({d:P.d-0.01,e:el('polygon',{
+      points:P.pts.map(q=>`${q[0].toFixed(1)},${q[1].toFixed(1)}`).join(' '),
+      fill:MAT.shadow,'fill-opacity':.42,stroke:'none'})});
+  });
+  // perimeter fence
+  if(fence.on&&fence.h>0){
+    for(let i=0;i<prop.length;i++){
+      const [ax,ay]=prop[i], [bx,by]=prop[(i+1)%prop.length];
+      const seg=[];
+      for(let k=0;k<=10;k++)seg.push([ax+(bx-ax)*k/10, ay+(by-ay)*k/10, 0]);
+      for(let k=10;k>=0;k--)seg.push([ax+(bx-ax)*k/10, ay+(by-ay)*k/10, fence.h]);
+      const P=povPoly(c,B,seg,VW,VH,1);
+      const nrm=normalOf([[ax,ay,0],[bx,by,0],[bx,by,fence.h]]);
+      if(P)items.push({d:P.d,e:el('polygon',{
+        points:P.pts.map(q=>`${q[0].toFixed(1)},${q[1].toFixed(1)}`).join(' '),
+        fill:shade(nrm,MAT.wood),stroke:MAT.woodDark,'stroke-width':.7})});
+    }
+  }
+  // structures — skip whatever the camera is mounted inside
+  const housing=boxes.filter(b=>b.on&&c.x>b.x0&&c.x<b.x1&&c.y>b.y0&&c.y<b.y1&&
+    c.z>=baseAt(b,c.x,c.y)-0.02&&c.z<=topAt(b,c.x,c.y)+0.02);
+  boxes.forEach(b=>{
+    if(!b.on||housing.includes(b))return;
+    FACES.forEach(f=>{
+      const W3=f.pts(b);
+      if(!facesCamera(c,b,W3))return;          // never draw the back of a wall
+      const P=povPoly(c,B,W3,VW,VH);
+      if(!P)return;
+      items.push({d:P.d,e:el('polygon',{points:P.pts.map(q=>`${q[0].toFixed(1)},${q[1].toFixed(1)}`).join(' '),
+        fill:shade(outNormal(b,W3),matOf(b)),stroke:'rgba(0,0,0,.28)','stroke-width':.6})});
+    });
+  });
+  // other cameras
+  cams.forEach(o=>{
+    if(o===c||!o.on)return;
+    const p=toCam(c,B,[o.x,o.y,o.z]);
+    if(p[2]<0.3)return;
+    const sp=povScreen(c,p,VW,VH);
+    if(sp[0]<-20||sp[0]>VW+20)return;
+    items.push({d:-1,e:el('circle',{cx:sp[0],cy:sp[1],r:3.5,fill:'none',
+      stroke:colC(o),'stroke-width':1.6})});
+    items.push({d:-1,e:txt({x:sp[0],y:sp[1]-6,'text-anchor':'middle',fill:colC(o),
+      'font-family':'var(--mono)','font-size':8},o.id)});
+  });
+  items.sort((a,b2)=>b2.d-a.d).forEach(i=>svgEl.append(i.e));
+  // horizon
+  const hp=[];
+  for(let k=0;k<=24;k++){
+    const phi=-lensOf(c).f/2+lensOf(c).f*k/24;
+    const p=toCam(c,B,[c.x+60*Math.cos(rad(c.a+phi)), c.y+60*Math.sin(rad(c.a+phi)), c.z]);
+    if(p[2]<0.3)continue;
+    hp.push(povScreen(c,p,VW,VH));
+  }
+  if(hp.length>1)svgEl.append(el('polyline',{points:hp.map(q=>`${q[0].toFixed(1)},${q[1].toFixed(1)}`).join(' '),
+    fill:'none',stroke:'#4A5462','stroke-width':.8,'stroke-dasharray':'4 4'}));
+  svgEl.append(txt({x:8,y:14,fill:colC(c),'font-family':'var(--mono)','font-size':10,
+    'font-weight':500},`${c.id} · ${c.name}`));
+  svgEl.append(txt({x:8,y:VH-7,fill:'#8A9099','font-family':'var(--mono)','font-size':8},
+    `aim ${Math.round(c.a)}° · tilt ${Math.round(c.t)}° · ${lensOf(c).f}° lens`+
+    (housing.length?` · mounted in ${housing.map(b=>b.name).join(', ')}`:'')));
+}
+const STEP=2;
+let holdTimer=null;
+function nudge(c,da,dt){
+  if(da){c.a=norm(c.a+da);
+    if(c.tour)c.tour.forEach(k=>k.a=norm(k.a+da));}
+  if(dt){c.t=clamp(Math.round((c.t+dt)*10)/10,-25,60);
+    if(c.tour)c.tour.forEach(k=>k.t=clamp(k.t+dt,-25,60));}
+  render(); list();
+}
+function makeDpad(c){
+  const d=document.createElement('div'); d.className='dpad';
+  d.onclick=e=>e.stopPropagation();
+  const mk=(cls,label,title,fn)=>{
+    const b=document.createElement('button');
+    b.className=cls; b.textContent=label; b.title=title;
+    b.onclick=e=>e.stopPropagation();
+    b.addEventListener('pointerdown',e=>{
+      e.stopPropagation(); e.preventDefault();
+      fn();
+      clearInterval(holdTimer);
+      let delay=setTimeout(()=>{holdTimer=setInterval(fn,110);},320);
+      const stop=()=>{clearTimeout(delay);clearInterval(holdTimer);holdTimer=null;
+        removeEventListener('pointerup',stop);removeEventListener('pointercancel',stop);};
+      addEventListener('pointerup',stop); addEventListener('pointercancel',stop);
+    });
+    return b;
+  };
+  const home={a:c.a,t:c.t};
+  d.append(
+    mk('u','▲','tilt up',   ()=>nudge(c,0,-STEP)),
+    mk('l','◀','pan left',  ()=>nudge(c,-STEP,0)),
+    mk('c','·','level the tilt', ()=>nudge(c,0,-c.t)),
+    mk('r','▶','pan right', ()=>nudge(c,STEP,0)),
+    mk('d','▼','tilt down', ()=>nudge(c,0,STEP)));
+  return d;
+}
+function renderPOV(){
+  const wrap=$('povgrid'); wrap.textContent='';
+  const live=cams.filter(c=>c.on);
+  const maxed=povMax&&live.find(c=>c.id===povMax);
+  const list=maxed?[maxed]:live;
+  wrap.classList.toggle('one',!!maxed||mode==='split');
+  wrap.style.gridTemplateColumns=(maxed||mode==='split')?'1fr':(live.length<=2?'1fr':'1fr 1fr');
+  list.forEach(c=>{
+    const wide=(c.lens||'ptz')==='duo';
+    const cell=document.createElement('div');
+    cell.className='povcell'+(wide?' wide':'');
+    const sv=document.createElementNS(NS,'svg');
+    sv.setAttribute('preserveAspectRatio','none');
+    cell.append(sv);
+    cell.onclick=()=>{povMax=povMax===c.id?null:c.id;renderPOV();};
+    cell.title=povMax?'click to show all cameras':'click to maximise';
+    cell.append(makeDpad(c));
+    wrap.append(cell);
+    drawPOV(c,sv,wide?1280:640,400);
+  });
+}
+
+/* ---------------- 3D view ---------------- */
+const v3=$('view3d');
+let az=-38, elv=32, zoom=1, panX=0, panY=0;
+function proj(x,y,z){
+  const A=rad(az), E=rad(elv);
+  const X=x*Math.cos(A)-y*Math.sin(A);
+  const Y=x*Math.sin(A)+y*Math.cos(A);
+  const s=Math.min(W/VIEW.w,H/VIEW.h)*zoom;
+  return {x:W/2+panX+(X-12.5)*s, y:H/2+panY+((Y-12.5)*Math.sin(E)-z*Math.cos(E))*s,
+          d:(Y-12.5)*Math.cos(E)+z*Math.sin(E)};
+}
+// top corners in order NW, NE, SE, SW
+const XY=b=>[[b.x0,b.y0],[b.x1,b.y0],[b.x1,b.y1],[b.x0,b.y1]];   // NW NE SE SW
+const TC=b=>XY(b).map(([x,y],i)=>[x,y,b.zt[i]]);
+const BC=b=>XY(b).map(([x,y],i)=>[x,y,b.zb[i]]);
+const FACES=[
+ {pts:b=>{const t=TC(b);return [t[0],t[1],t[2]];},axis:'top',shade:.30},
+ {pts:b=>{const t=TC(b);return [t[0],t[2],t[3]];},axis:'top',shade:.32},
+ {pts:b=>{const t=BC(b);return [t[0],t[1],t[2]];},axis:'base',shade:.05},
+ {pts:b=>{const t=BC(b);return [t[0],t[2],t[3]];},axis:'base',shade:.06},
+ {pts:b=>[[b.x0,b.y0,b.zb[0]],[b.x1,b.y0,b.zb[1]],[b.x1,b.y0,b.zt[1]],[b.x0,b.y0,b.zt[0]]],axis:'y0',shade:.20},
+ {pts:b=>[[b.x0,b.y1,b.zb[3]],[b.x1,b.y1,b.zb[2]],[b.x1,b.y1,b.zt[2]],[b.x0,b.y1,b.zt[3]]],axis:'y1',shade:.14},
+ {pts:b=>[[b.x0,b.y0,b.zb[0]],[b.x0,b.y1,b.zb[3]],[b.x0,b.y1,b.zt[3]],[b.x0,b.y0,b.zt[0]]],axis:'x0',shade:.24},
+ {pts:b=>[[b.x1,b.y0,b.zb[1]],[b.x1,b.y1,b.zb[2]],[b.x1,b.y1,b.zt[2]],[b.x1,b.y0,b.zt[1]]],axis:'x1',shade:.10}
+];
+// edge + face handles: which corner indices each one moves
+const EDGES=[{k:'N',c:[0,1]},{k:'E',c:[1,2]},{k:'S',c:[2,3]},{k:'W',c:[3,0]}];
+function draw3d(){
+  v3.setAttribute('viewBox',`0 0 ${W} ${H}`);
+  v3.setAttribute('width',W); v3.setAttribute('height',H);
+  v3.textContent='';
+  const g=el('g'); v3.append(g);
+  const items=[];
+  // grass inside the boundary
+  {
+    const dfs=el('defs');
+    const gp=el('pattern',{id:'grass3d',width:16,height:16,patternUnits:'userSpaceOnUse'});
+    gp.append(el('rect',{width:16,height:16,fill:MAT.grass}));
+    gp.append(el('path',{d:'M3 13 l2 -5 M8 14 l1.5 -6 M12 12 l2 -4',
+      stroke:MAT.grassLit,'stroke-width':1.1,'stroke-linecap':'round','stroke-opacity':.7}));
+    dfs.append(gp); g.append(dfs);
+    const P=prop.map(([x,y])=>proj(x,y,0));
+    items.push({d:-9e5,e:el('polygon',{points:P.map(q=>`${q.x},${q.y}`).join(' '),
+      fill:'url(#grass3d)',stroke:MAT.grassDark,'stroke-width':1.4})});
+  }
+  // shadows
+  [...boxes.filter(b=>b.on).map(shadowOf),...fenceShadows()].forEach(poly=>{
+    const P=poly.map(([x,y])=>proj(x,y,0.02));
+    items.push({d:-8.9e5,e:el('polygon',{points:P.map(q=>`${q.x},${q.y}`).join(' '),
+      fill:MAT.shadow,'fill-opacity':.45,stroke:'none'})});
+  });
+  // perimeter fence
+  if(fence.on&&fence.h>0){
+    for(let i=0;i<prop.length;i++){
+      const [ax,ay]=prop[i], [bx,by]=prop[(i+1)%prop.length];
+      const W3=[[ax,ay,0],[bx,by,0],[bx,by,fence.h],[ax,ay,fence.h]];
+      const P=W3.map(([x,y,z])=>proj(x,y,z));
+      items.push({d:P.reduce((s,q)=>s+q.d,0)/4,
+        e:el('polygon',{points:P.map(q=>`${q.x},${q.y}`).join(' '),
+          fill:shade(normalOf(W3),MAT.wood),stroke:MAT.woodDark,'stroke-width':.8})});
+    }
+  }
+  // ground grid
+  for(let v=-30;v<=65;v+=5){
+    const a=proj(v,-30,0),b=proj(v,60,0),c=proj(-30,v,0),d=proj(60,v,0);
+    items.push({d:-1e6,e:el('line',{x1:a.x,y1:a.y,x2:b.x,y2:b.y,stroke:'#1E2732','stroke-width':1})});
+    items.push({d:-1e6,e:el('line',{x1:c.x,y1:c.y,x2:d.x,y2:d.y,stroke:'#1E2732','stroke-width':1})});
+  }
+  if($('tFrus').checked&&frusta&&!orbit){
+    frusta.forEach(f=>{
+      const P=f.p.map(([x,y,z])=>proj(x,y,z));
+      items.push({d:P.reduce((s,q)=>s+q.d,0)/P.length,
+        e:el('polygon',{points:P.map(q=>`${q.x.toFixed(1)},${q.y.toFixed(1)}`).join(' '),
+          fill:f.col,'fill-opacity':f.a,stroke:f.col,'stroke-opacity':f.a*0.5,'stroke-width':.4})});
+    });
+  }
+  if($('tSplat').checked&&splat&&!orbit){
+    splat.forEach(sp=>{
+      const P=sp.p.map(([x,y,z])=>proj(x,y,z));
+      items.push({d:P.reduce((s,q)=>s+q.d,0)/4+0.35,
+        e:el('polygon',{points:P.map(q=>`${q.x.toFixed(1)},${q.y.toFixed(1)}`).join(' '),
+          fill:sp.col,'fill-opacity':sp.a,stroke:'none'})});
+    });
+  }
+  boxes.forEach(b=>{
+    if(!b.on)return;
+    const isSel=selBox===b.id;
+    FACES.forEach(f=>{
+      const W3=f.pts(b);
+      const P=W3.map(([x,y,z])=>proj(x,y,z));
+      const dep=P.reduce((s,p)=>s+p.d,0)/4;
+      const e=el('polygon',{points:P.map(p=>`${p.x},${p.y}`).join(' '),
+        fill:shade(outNormal(b,W3),matOf(b)),'fill-opacity':isSel?1:.95,
+        stroke:isSel?'#E9E5DB':'rgba(0,0,0,.3)','stroke-width':isSel?1.5:.7,
+        style:isSel?'cursor:ns-resize':'cursor:pointer'});
+      e.dataset.box=b.id; e.dataset.face=f.axis;
+      items.push({d:dep,e});
+    });
+    if(isSel){
+      [['zt',TC(b),'#E9E5DB'],['zb',BC(b),'#9AA3B0']].forEach(([key,C,clr])=>{
+        EDGES.forEach(ed=>{
+          const a=C[ed.c[0]], z=C[ed.c[1]];
+          const P=proj((a[0]+z[0])/2,(a[1]+z[1])/2,(a[2]+z[2])/2);
+          const h=el('rect',{x:P.x-6,y:P.y-6,width:12,height:12,rx:2,fill:'#0F1319',
+            stroke:clr,'stroke-width':1.6,style:'cursor:ns-resize'});
+          h.dataset.box=b.id; h.dataset.surf=key; h.dataset.edge=ed.c.join(',');
+          items.push({d:P.d+50,e:h});
+          items.push({d:P.d+50,e:txt({x:P.x,y:P.y-9,'text-anchor':'middle',fill:clr,
+            'font-family':'var(--mono)','font-size':8},ed.k)});
+        });
+        const cxx=C.reduce((s,p)=>s+p[0],0)/4, cyy=C.reduce((s,p)=>s+p[1],0)/4,
+              czz=C.reduce((s,p)=>s+p[2],0)/4;
+        const P=proj(cxx,cyy,czz);
+        const h=el('circle',{cx:P.x,cy:P.y,r:7,fill:'#0F1319',stroke:clr,'stroke-width':1.6,
+          style:'cursor:ns-resize'});
+        h.dataset.box=b.id; h.dataset.surf=key; h.dataset.edge='0,1,2,3';
+        items.push({d:P.d+51,e:h});
+      });
+    }
+  });
+  // cameras: mast + aim ray + fov edges
+  cams.forEach(c=>{
+    if(!c.on)return;
+    const k=colC(c), L=lensOf(c);
+    const base=proj(c.x,c.y,0), top=proj(c.x,c.y,c.z);
+    items.push({d:top.d,e:el('line',{x1:base.x,y1:base.y,x2:top.x,y2:top.y,
+      stroke:k,'stroke-width':1,'stroke-opacity':.45,'stroke-dasharray':'3 3'})});
+    if(!$('tFrus').checked)
+    [-L.f/2,0,L.f/2].forEach(off=>{
+      [-L.vf/2,L.vf/2].forEach(vo=>{
+        const aa=rad(c.a+off), tt=rad((c.t||0)+vo);
+        const hd=Math.min(L.r,(c.z-3)/Math.max(Math.tan(tt),0.05));
+        const ex=c.x+hd*Math.cos(aa), ey=c.y+hd*Math.sin(aa);
+        const ez=c.z-hd*Math.tan(tt);
+        const p=proj(ex,ey,Math.max(ez,0));
+        items.push({d:top.d,e:el('line',{x1:top.x,y1:top.y,x2:p.x,y2:p.y,
+          stroke:k,'stroke-width':off===0?1.3:.8,'stroke-opacity':off===0?.85:.4})});
+      });
+    });
+    items.push({d:top.d+1,e:el('circle',{cx:top.x,cy:top.y,r:5,fill:'#0F1319',stroke:k,'stroke-width':2})});
+    items.push({d:top.d+1,e:txt({x:top.x,y:top.y-10,'text-anchor':'middle',fill:k,
+      'font-family':'var(--mono)','font-size':10},c.id)});
+  });
+  items.sort((a,b)=>a.d-b.d).forEach(i=>g.append(i.e));
+}
+
+/* ---------------- render ---------------- */
+let coarse=false;
+function render(){
+  T=fit();
+  if(mode==='pov'){
+    cov.style.display='none'; svg.style.display='none'; v3.style.display='none';
+    renderPOV();
+  }
+  else if(mode==='split'){
+    const heat=$('rmode').value==='heat';
+    cov.style.display=heat?'':'none'; svg.style.display=''; v3.style.display='none';
+    if(heat)paintCoverage(coarse);
+    drawPlan();
+    renderPOV();
+  }
+  else if(mode==='2d'){
+    const heat=$('rmode').value==='heat';
+    cov.style.display=heat?'':'none'; svg.style.display=''; v3.style.display='none';
+    if(heat)paintCoverage(coarse);
+    drawPlan(); }
+  else if(mode==='3d'){ cov.style.display='none'; svg.style.display='none'; v3.style.display='';
+    splat=(!playing&&$('tSplat').checked)?buildSplat():null;
+    frusta=(!playing&&$('tFrus').checked)?buildFrusta():null;
+    draw3d(); }
+  if(!playing){ $('code').value=encode(); updateStats(); }
+}
+let statTimer;
+function updateStats(){
+  clearTimeout(statTimer);
+  statTimer=setTimeout(()=>{
+    const tz=parseFloat($('tz').value);
+    const B=propBounds();
+    let ac=0,ai=0,n=0;
+    for(let x=B.x0;x<=B.x1;x+=1.5)for(let y=B.y0;y<=B.y1;y+=1.5){
+      if(!inProp(x,y)||inAnyBox(x,y))continue;
+      n++;
+      let best=0;
+      for(const c of cams){ if(!c.on)continue; const q=quality(c,x,y,tz); if(q>best)best=q; }
+      if(best)ac++; if(best===2)ai++;
+    }
+    // second pass: only ground within 25 ft of a structure
+    let nc=0,cc=0,ci=0,dut=0;
+    const near=(x,y)=>boxes.some(b=>{
+      if(!b.on||zmax(b)<3)return false;
+      const dx=Math.max(b.x0-x,0,x-b.x1), dy=Math.max(b.y0-y,0,y-b.y1);
+      return Math.hypot(dx,dy)<=25;});
+    for(let x=B.x0;x<=B.x1;x+=1.5)for(let y=B.y0;y<=B.y1;y+=1.5){
+      if(!inProp(x,y)||inAnyBox(x,y)||!near(x,y))continue;
+      nc++;
+      let best=0,fr=0;
+      for(const c of cams){ if(!c.on)continue;
+        const q=quality(c,x,y,tz);
+        if(q>best)best=q;
+        const f=swept(c,x,y,tz).frac;
+        if(f>fr)fr=f; }
+      if(best)cc++; if(best===2)ci++;
+      dut+=fr;
+    }
+    const area=Math.round(n*2.25), areaN=Math.round(nc*2.25);
+    $('stats').textContent='';
+    $('statline').innerHTML=n?
+      `<b>Near buildings</b> (within 25 ft, ~${areaN.toLocaleString()} sq ft): `+
+      `<b>${Math.round(100*cc/Math.max(nc,1))}%</b> on camera, <b>${Math.round(100*ci/Math.max(nc,1))}%</b> at face-ID.`+
+      `<br><span style="color:var(--dim)">Whole lot (~${area.toLocaleString()} sq ft): `+
+      `${Math.round(100*ac/n)}% on camera, ${Math.round(100*ai/n)}% at face-ID.`+
+      (cams.some(c=>c.on&&c.tour&&c.tour.length)
+        ? `<br>Near ground is watched <b style="color:var(--bone)">${
+            Math.round(100*dut/Math.max(nc,1))}%</b> of each PT cycle on average.`
+        : '')+`</span>`
+      :'Property boundary encloses no open ground.';
+  },120);
+}
+
+/* ---------------- interaction: plan ---------------- */
+let drag=null;
+function toW(e){const r=$('stage').getBoundingClientRect();
+  return {x:sx(e.clientX-r.left), y:sy(e.clientY-r.top)};}
+svg.addEventListener('wheel',e=>{
+  e.preventDefault();
+  const r=$('stage').getBoundingClientRect();
+  const mx=e.clientX-r.left, my=e.clientY-r.top;
+  const wpx=sx(mx), wpy=sy(my);
+  zoom2=clamp(zoom2*(e.deltaY>0?0.9:1.111),0.25,8);
+  const s2=baseScale()*zoom2;
+  ctrX=wpx+(W/2-mx)/s2; ctrY=wpy+(H/2-my)/s2;
+  render();
+},{passive:false});
+
+svg.addEventListener('pointerdown',e=>{
+  const pv=e.target.closest('[data-vert],[data-mid]');
+  if(pv&&selProp){
+    if(pv.dataset.vert!==undefined){
+      const i=+pv.dataset.vert;
+      if((e.shiftKey||e.altKey)&&prop.length>3){prop.splice(i,1);render();list();return;}
+      drag={type:'vert',i};
+    } else {
+      const i=+pv.dataset.mid;
+      const [x,y]=prop[i],[nx,ny]=prop[(i+1)%prop.length];
+      prop.splice(i+1,0,[Math.round((x+nx)/2*10)/10,Math.round((y+ny)/2*10)/10]);
+      drag={type:'vert',i:i+1};
+    }
+    coarse=true; svg.setPointerCapture(e.pointerId); render(); list(); return;
+  }
+  const t=e.target.closest('[data-cam],[data-box]');
+  if(!t){
+    sel=null;selBox=null;selProp=false;
+    drag={type:'pan',x:e.clientX,y:e.clientY,cx:ctrX,cy:ctrY};
+    coarse=true; svg.setPointerCapture(e.pointerId); render(); list(); return;}
+  if(t.dataset.cam){
+    const c=cams.find(v=>v.id===t.dataset.cam); if(!c||!c.on)return;
+    drag={type:t.dataset.mode,c}; sel=c.id; selBox=null;
+  } else {
+    const b=boxes.find(v=>v.id===t.dataset.box); if(!b)return;
+    selBox=b.id; sel=null;
+    if(t.dataset.corner)drag={type:'corner',b,k:t.dataset.corner};
+    else if(t.dataset.grab==='move'){const p0=toW(e);drag={type:'boxmove',b,px:p0.x,py:p0.y,
+      o:{x0:b.x0,y0:b.y0,x1:b.x1,y1:b.y1}};}
+  }
+  coarse=true; svg.setPointerCapture(e.pointerId); render(); list();
+});
+svg.addEventListener('pointermove',e=>{
+  if(!drag)return;
+  if(drag.type==='pan'){
+    const s2=baseScale()*zoom2;
+    ctrX=drag.cx-(e.clientX-drag.x)/s2;
+    ctrY=drag.cy-(e.clientY-drag.y)/s2;
+    render(); return;
+  }
+  const p=toW(e);
+  if(drag.type==='aim')drag.c.a=Math.round(norm(deg(Math.atan2(p.y-drag.c.y,p.x-drag.c.x))));
+  else if(drag.type==='move'){drag.c.x=Math.round(p.x*10)/10;drag.c.y=Math.round(p.y*10)/10;}
+  else if(drag.type==='boxmove'){
+    const b=drag.b, ddx=Math.round((p.x-drag.px)*10)/10, ddy=Math.round((p.y-drag.py)*10)/10;
+    b.x0=drag.o.x0+ddx; b.x1=drag.o.x1+ddx; b.y0=drag.o.y0+ddy; b.y1=drag.o.y1+ddy;
+  }
+  else if(drag.type==='vert'){
+    prop[drag.i]=[Math.round(p.x*10)/10,Math.round(p.y*10)/10];
+  }
+  else if(drag.type==='corner'){
+    const b=drag.b, k=drag.k;
+    if(k[0]==='n')b.y0=Math.min(Math.round(p.y*10)/10,b.y1-1); else b.y1=Math.max(Math.round(p.y*10)/10,b.y0+1);
+    if(k[1]==='w')b.x0=Math.min(Math.round(p.x*10)/10,b.x1-1); else b.x1=Math.max(Math.round(p.x*10)/10,b.x0+1);
+  }
+  render();
+});
+['pointerup','pointercancel'].forEach(v=>svg.addEventListener(v,()=>{
+  if(drag){drag=null;coarse=false;render();list();}}));
+
+/* ---------------- interaction: 3D ---------------- */
+let orbit=null, faceDrag=null;
+v3.addEventListener('pointerdown',e=>{
+  const t=e.target.closest('[data-box]');
+  if(t){
+    const b=boxes.find(v=>v.id===t.dataset.box);
+    if(b){
+      const was=selBox===b.id;
+      selBox=b.id; sel=null;
+      if(t.dataset.surf)
+        faceDrag={b,surf:t.dataset.surf,idx:t.dataset.edge.split(',').map(Number),
+          y0:e.clientY,v0:b[t.dataset.surf].slice()};
+      else if(was&&t.dataset.face)
+        faceDrag={b,axis:t.dataset.face,y0:e.clientY,
+          v0:t.dataset.face==='top'?b.zt.slice():
+             t.dataset.face==='base'?b.zb.slice():b[t.dataset.face]};
+      v3.setPointerCapture(e.pointerId); render(); list(); return; }
+  }
+  const wantPan=e.shiftKey||e.button===1||e.button===2;
+  orbit={mode:wantPan?'pan':'orbit',x:e.clientX,y:e.clientY,az,elv,px:panX,py:panY};
+  v3.style.cursor=wantPan?'grabbing':'move';
+  v3.setPointerCapture(e.pointerId);
+});
+v3.addEventListener('contextmenu',e=>e.preventDefault());
+v3.addEventListener('pointermove',e=>{
+  if(faceDrag){
+    const s=Math.min(W/VIEW.w,H/VIEW.h)*zoom;
+    const d=-(e.clientY-faceDrag.y0)/(s*Math.cos(rad(elv)));
+    const b=faceDrag.b, ax=faceDrag.axis;
+    if(faceDrag.surf){
+      const arr=faceDrag.v0.slice();
+      faceDrag.idx.forEach(i=>arr[i]=Math.round((faceDrag.v0[i]+d)*4)/4);
+      if(faceDrag.surf==='zt')b.zt=arr.map((v,i)=>Math.max(v,b.zb[i]+.15));
+      else b.zb=arr.map((v,i)=>Math.min(v,b.zt[i]-.15));
+      render(); return;
+    }
+    if(ax==='top'||ax==='base'){
+      const key=ax==='top'?'zt':'zb';
+      const src=(faceDrag.v0&&faceDrag.v0.length)?faceDrag.v0:b[key];
+      const arr=src.map(v=>Math.round((v+d)*4)/4);
+      if(key==='zt')b.zt=arr.map((v,i)=>Math.max(v,b.zb[i]+.15));
+      else b.zb=arr.map((v,i)=>Math.min(v,b.zt[i]-.15));
+      render(); return;
+    }
+    let v=Math.round((faceDrag.v0+d)*2)/2;
+    if(ax==='x1')b.x1=Math.max(v,b.x0+1);
+    else if(ax==='x0')b.x0=Math.min(v,b.x1-1);
+    else if(ax==='y1')b.y1=Math.max(v,b.y0+1);
+    else if(ax==='y0')b.y0=Math.min(v,b.y1-1);
+    render(); return;
+  }
+  if(!orbit)return;
+  if(orbit.mode==='pan'){
+    panX=orbit.px+(e.clientX-orbit.x);
+    panY=orbit.py+(e.clientY-orbit.y);
+  } else {
+    az=orbit.az+(e.clientX-orbit.x)*0.35;
+    elv=clamp(orbit.elv+(e.clientY-orbit.y)*0.28,6,86);
+  }
+  draw3d();
+});
+['pointerup','pointercancel'].forEach(v=>v3.addEventListener(v,()=>{
+  if(faceDrag){faceDrag=null;list();}
+  orbit=null; v3.style.cursor=''; render();}));
+v3.addEventListener('wheel',e=>{e.preventDefault();
+  const r=$('stage').getBoundingClientRect();
+  const mx=e.clientX-r.left-W/2-panX, my=e.clientY-r.top-H/2-panY;
+  const z0=zoom; zoom=clamp(zoom*(e.deltaY>0?0.93:1.075),0.25,6);
+  const k=zoom/z0;
+  panX-=mx*(k-1); panY-=my*(k-1);
+  draw3d();},{passive:false});
+
+function setMode(m){
+  mode=m;
+  $('m2d').setAttribute('aria-pressed',m==='2d');
+  $('m3d').setAttribute('aria-pressed',m==='3d');
+  $('mpov').setAttribute('aria-pressed',m==='pov');
+  $('msplit').setAttribute('aria-pressed',m==='split');
+  $('povgrid').style.display=(m==='pov'||m==='split')?'grid':'none';
+  $('stage').classList.toggle('split',m==='split');
+}
+$('msplit').onclick=()=>{setMode('split');
+  $('hint').textContent='Plan and camera views together · click a panel to maximise it';
+  render();};
+$('mpov').onclick=()=>{setMode('pov');
+  $('hint').textContent='Each camera\'s own view · click a panel to maximise · frustums are hidden here';
+  render();};
+$('m2d').onclick=()=>{setMode('2d');
+  $('hint').textContent='Scroll to zoom · drag background to pan · drag box corners to resize, ✛ to move it';render();};
+$('m3d').onclick=()=>{setMode('3d');
+  $('hint').textContent='Drag to orbit · shift-drag or right-drag to pan · scroll to zoom · white handles = top, grey = base';render();};
+
+/* ---------------- panel ---------------- */
+function numFld(lbl,val,cb,step){
+  const d=document.createElement('div'); d.className='fld';
+  const l=document.createElement('label'); l.textContent=lbl;
+  const i=document.createElement('input'); i.className='t'; i.type='number';
+  i.step=step||0.5; i.value=val;
+  i.oninput=()=>{const v=parseFloat(i.value); if(!Number.isNaN(v)){cb(v);render();}};
+  d.append(l,i); return d;
+}
+function list(){
+  const L=$('camlist'); L.textContent='';
+  cams.forEach(c=>{
+    const k=colC(c);
+    const d=document.createElement('div');
+    d.className='card'+(c.on?'':' off')+(sel===c.id?' sel':'');
+    d.style.setProperty('--dot',k);
+    const h=document.createElement('div'); h.className='head';
+    const lo=lowVis(c);
+    h.innerHTML=`<div class="b"><div class="id">${c.id} · ${lensOf(c).label}</div>
+      <div class="nm">${c.name}</div><div class="mt">${c.note}<br>
+      x ${c.x} · y ${c.y} · ${c.z} ft · aim ${c.a}° · tilt ${c.t}°${
+        (c.tour&&c.tour.length)?`<br>PT circuit: ${stops(c).length} stops, ${cycle(c)}s cycle`:''}
+      ${lo?`<br><b>${lo}</b>`:''}</div></div>`;
+    const eye=document.createElement('button'); eye.className='eye';
+    eye.textContent=c.on?'●':'○';
+    eye.onclick=ev=>{ev.stopPropagation();c.on=!c.on;render();list();};
+    h.append(eye);
+    h.onclick=()=>{sel=sel===c.id?null:c.id;selBox=null;render();list();};
+    d.append(h);
+    const ed=document.createElement('div'); ed.className='edit';
+    const nm=document.createElement('div'); nm.className='fld';
+    const nl=document.createElement('label'); nl.textContent='name';
+    const ni=document.createElement('input'); ni.className='t'; ni.value=c.name;
+    ni.oninput=()=>{c.name=ni.value;$('code').value=encode();};
+    nm.append(nl,ni); ed.append(nm);
+    const lr=document.createElement('div'); lr.className='row'; lr.style.marginBottom='5px';
+    Object.keys(LENS).forEach(key=>{
+      const bt=document.createElement('button'); bt.className='act'; bt.textContent=LENS[key].label;
+      if((c.lens||'ptz')===key){bt.style.borderColor=k;bt.style.background='#212A35';}
+      bt.onclick=()=>{c.lens=key;render();list();};
+      lr.append(bt);});
+    ed.append(lr);
+    ed.append(numFld('height ft',c.z,v=>c.z=v));
+    ed.append(numFld('down-tilt°',c.t,v=>c.t=v,1));
+    ed.append(numFld('aim °',c.a,v=>c.a=norm(v),1));
+    if((c.lens||'ptz')==='ptz'){
+      const hdr=document.createElement('div');
+      hdr.style.cssText='font-family:var(--mono);font-size:9.5px;color:var(--dim);margin:8px 0 4px;letter-spacing:.1em';
+      const cyc=cycle(c);
+      hdr.textContent=`PT CIRCUIT · ${stops(c).length} stops · ${cyc}s cycle`;
+      ed.append(hdr);
+      ed.append(numFld('home s',c.hd||20,v=>c.hd=Math.max(1,v),1));
+      (c.tour||[]).forEach((kf,i)=>{
+        const row=document.createElement('div'); row.className='fld';
+        const lb=document.createElement('label'); lb.textContent='stop '+(i+1);
+        const mk=(val,cb,w)=>{const n=document.createElement('input');
+          n.className='t'; n.type='number'; n.step=1; n.value=val; n.style.flex=w;
+          n.oninput=()=>{const v=parseFloat(n.value); if(!Number.isNaN(v)){cb(v);render();}};
+          return n;};
+        const del=document.createElement('button');
+        del.className='eye'; del.textContent='×'; del.title='remove stop';
+        del.onclick=()=>{c.tour.splice(i,1);render();list();};
+        row.append(lb,
+          mk(kf.a,v=>kf.a=norm(v),'1 1 0'),
+          mk(kf.t,v=>kf.t=clamp(v,-30,60),'1 1 0'),
+          mk(kf.d,v=>kf.d=Math.max(1,v),'1 1 0'),
+          del);
+        row.title='aim° / tilt° / dwell s';
+        ed.append(row);
+      });
+      const kr=document.createElement('div'); kr.className='row'; kr.style.marginBottom='5px';
+      const add=document.createElement('button'); add.className='act';
+      add.textContent='+ Stop here';
+      add.title='Capture the current aim and tilt as a circuit stop';
+      add.onclick=()=>{
+        c.tour=c.tour||[];
+        if(c.tour.length>=3){toast('3 extra stops is the cap');return;}
+        const last=c.tour.length?c.tour[c.tour.length-1].a:c.a;
+        c.tour.push({a:norm(last+60),t:c.t||15,d:8});
+        render();list();};
+      const clr=document.createElement('button'); clr.className='act'; clr.textContent='Clear';
+      clr.onclick=()=>{c.tour=[];render();list();};
+      kr.append(add,clr); ed.append(kr);
+    }
+    const rr=document.createElement('div'); rr.className='row';
+    const del=document.createElement('button'); del.className='act danger'; del.textContent='Delete';
+    del.onclick=()=>{cams=cams.filter(v=>v!==c);sel=null;render();list();};
+    rr.append(del); ed.append(rr); d.append(ed);
+    L.append(d);
+  });
+
+  const B=$('boxlist'); B.textContent='';
+  {
+    const d=document.createElement('div');
+    d.className='card'+(selProp?' sel':''); d.style.setProperty('--dot','#B9C0C9');
+    const h=document.createElement('div'); h.className='head';
+    const A=polyArea();
+    h.innerHTML=`<div class="b"><div class="id">PROPERTY</div>
+      <div class="nm">Boundary</div><div class="mt">${prop.length} vertices · ~${
+        Math.round(A).toLocaleString()} sq ft<br>${
+        selProp?'drag a vertex · + adds one · shift-click removes':'click to edit'}</div></div>`;
+    h.onclick=()=>{selProp=!selProp;sel=null;selBox=null;render();list();};
+    d.append(h);
+    const ed=document.createElement('div'); ed.className='edit';
+    // scale the polygon about its centroid to hit a known lot area
+    const sr=document.createElement('div'); sr.className='fld';
+    const sl2=document.createElement('label'); sl2.textContent='lot sq ft';
+    const si=document.createElement('input'); si.className='t'; si.type='number'; si.step=100;
+    si.value=Math.round(polyArea());
+    const sb=document.createElement('button'); sb.className='act'; sb.style.flex='0 0 62px';
+    sb.textContent='Scale';
+    sb.onclick=()=>{
+      const target=parseFloat(si.value), cur=polyArea();
+      if(!(target>0)||!(cur>0))return;
+      const k=Math.sqrt(target/cur);
+      const cx0=prop.reduce((a,v)=>a+v[0],0)/prop.length;
+      const cy0=prop.reduce((a,v)=>a+v[1],0)/prop.length;
+      prop=prop.map(([x,y])=>[Math.round((cx0+(x-cx0)*k)*10)/10,
+                              Math.round((cy0+(y-cy0)*k)*10)/10]);
+      render();list();toast('Scaled to '+Math.round(polyArea()).toLocaleString()+' sq ft');
+    };
+    sr.append(sl2,si,sb); ed.append(sr);
+    const r=document.createElement('div'); r.className='row';
+    const sq=document.createElement('button'); sq.className='act'; sq.textContent='Reset to square';
+    sq.onclick=()=>{prop=DEF_PROP();render();list();};
+    const md=document.createElement('button'); md.className='act'; md.textContent='Measured lot';
+    md.title='Restore the surveyed boundary without touching cameras or structures';
+    md.onclick=()=>{const {P}=decodeRaw(MEASURED); if(P){prop=P;splat=null;render();list();
+      toast('Boundary restored — '+Math.round(polyArea()).toLocaleString()+' sq ft');}};
+    const ft=document.createElement('button'); ft.className='act'; ft.textContent='Fit to structures';
+    ft.onclick=()=>{
+      const on=boxes.filter(b=>b.on);
+      if(!on.length)return;
+      const m=8;
+      const x0=Math.min(...on.map(b=>b.x0))-m, x1=Math.max(...on.map(b=>b.x1))+m;
+      const y0=Math.min(...on.map(b=>b.y0))-m, y1=Math.max(...on.map(b=>b.y1))+m;
+      prop=[[x0,y0],[x1,y0],[x1,y1],[x0,y1]].map(([a,c])=>[Math.round(a*10)/10,Math.round(c*10)/10]);
+      render();list();};
+    r.append(md,sq); ed.append(r);
+    const r2=document.createElement('div'); r2.className='row'; r2.style.marginTop='5px';
+    r2.append(ft); ed.append(r2); d.append(ed);
+    B.append(d);
+  }
+  boxes.forEach(b=>{
+    const d=document.createElement('div');
+    d.className='card'+(b.on?'':' off')+(selBox===b.id?' sel':'');
+    d.style.setProperty('--dot','#5A6678');
+    const h=document.createElement('div'); h.className='head';
+    h.innerHTML=`<div class="b"><div class="id">${b.id}</div><div class="nm">${b.name}</div>
+      <div class="mt">${b.x0},${b.y0} → ${b.x1},${b.y1}<br>${
+        isFlat(b)?`base ${b.zb[0]} ft · top ${b.zt[0]} ft`
+        :`sloped ${zmin(b)}–${zmax(b)} ft`}</div></div>`;
+    const eye=document.createElement('button'); eye.className='eye';
+    eye.textContent=b.on?'●':'○';
+    eye.onclick=ev=>{ev.stopPropagation();b.on=!b.on;render();list();};
+    h.append(eye);
+    h.onclick=()=>{selBox=selBox===b.id?null:b.id;sel=null;render();list();};
+    d.append(h);
+    const ed=document.createElement('div'); ed.className='edit';
+    const nm=document.createElement('div'); nm.className='fld';
+    const nl=document.createElement('label'); nl.textContent='name';
+    const ni=document.createElement('input'); ni.className='t'; ni.value=b.name;
+    ni.oninput=()=>{b.name=ni.value;$('code').value=encode();};
+    nm.append(nl,ni); ed.append(nm);
+    // edge heights: each field moves the two corners on that edge together
+    const eLbl={N:'N edge',E:'E edge',S:'S edge',W:'W edge'};
+    [['zt','top'],['zb','base']].forEach(([key,word])=>{
+      EDGES.forEach(edg=>{
+        const cur=(b[key][edg.c[0]]+b[key][edg.c[1]])/2;
+        ed.append(numFld(word+' '+edg.k,Math.round(cur*100)/100,v=>{
+          edg.c.forEach(i=>b[key][i]=v);
+          if(key==='zt')b.zt=b.zt.map((z,i)=>Math.max(z,b.zb[i]+.15));
+          else b.zb=b.zb.map((z,i)=>Math.min(z,b.zt[i]-.15));
+        },0.25));
+      });
+    });
+    const r1=document.createElement('div'); r1.className='row'; r1.style.marginTop='4px';
+    const fl=document.createElement('button'); fl.className='act'; fl.textContent='Level';
+    fl.onclick=()=>{const m=Math.max(...b.zt),n=Math.min(...b.zb);
+      b.zt=[m,m,m,m];b.zb=[n,n,n,n];render();list();};
+    const sl=document.createElement('button'); fl.style.flex='1';
+    sl.className='act'; sl.textContent='Slab base';
+    sl.title='Set the base parallel to the top';
+    sl.onclick=()=>{const th=Math.max(0.25,b.zt[0]-b.zb[0]);
+      b.zb=b.zt.map(v=>Math.round((v-th)*100)/100);render();list();};
+    r1.append(fl,sl); ed.append(r1);
+    const rr=document.createElement('div'); rr.className='row';
+    const del=document.createElement('button'); del.className='act danger'; del.textContent='Delete';
+    del.onclick=()=>{boxes=boxes.filter(v=>v!==b);selBox=null;render();list();};
+    rr.append(del); ed.append(rr); d.append(ed);
+    B.append(d);
+  });
+}
+// how much of the nominal arc is actually usable
+function lowVis(c){
+  const L=lensOf(c), tz=parseFloat($('tz').value);
+  let free=0,n=0;
+  for(let o=-L.f/2;o<=L.f/2;o+=3){
+    n++;
+    const aa=rad(c.a+o);
+    let any=false;
+    for(let d=6;d<=L.r;d+=3){
+      if(quality(c,c.x+d*Math.cos(aa),c.y+d*Math.sin(aa),tz)){any=true;break;}
+    }
+    if(any)free++;
+  }
+  const pct=Math.round(100*free/n);
+  return pct<80?`only ${pct}% of its arc reaches anything`:'';
+}
+
+/* ---------------- code ---------------- */
+function encode(){
+  const L=['PLAN v3 · feet · x=east y=south · a=bearing (0=east,90=south) · z=mount height · t=down-tilt'];
+  cams.forEach(c=>L.push(`CAM ${c.id} | ${c.on?'ON ':'OFF'} | ${(c.lens||'ptz').toUpperCase()} | x ${c.x} | y ${c.y} | z ${c.z} | a ${c.a} | t ${c.t} | ${c.name}`));
+  cams.forEach(c=>{ if(c.tour&&c.tour.length)
+    L.push(`TOUR ${c.id} | home ${c.hd||20} | `+c.tour.map(k=>`${k.a},${k.t},${k.d}`).join(' | ')); });
+  L.push('PROP '+prop.map(v=>v.join(',')).join(' | '));
+  L.push(`FENCE | ${fence.on?'ON':'OFF'} | h ${fence.h}`);
+  boxes.forEach(b=>L.push(`BOX ${b.id} | ${b.on?'ON ':'OFF'} | x0 ${b.x0} | y0 ${b.y0} | x1 ${b.x1} | y1 ${b.y1} | base ${b.zb.join('/')} | top ${b.zt.join('/')} | ${b.name}`));
+  return L.join('\n');
+}
+function decodeRaw(s){
+  const C=[],B=[],TR=[]; let P=null;
+  s.split('\n').forEach(ln=>{
+    const p=ln.split('|').map(v=>v.trim());
+    const g=t=>{const f=p.find(v=>v.startsWith(t+' ')); return f?parseFloat(f.slice(t.length+1)):NaN;};
+    if(/^FENCE/i.test(p[0])){
+      const hh=p.find(v=>/^h /i.test(v));
+      fence={on:!/OFF/i.test(ln),h:hh?parseFloat(hh.slice(2)):8};
+      return;
+    }
+    if(/^PROP/i.test(p[0])){
+      const raw=ln.replace(/^\s*PROP\s*/i,'').split('|');
+      const v=raw.map(t=>t.trim().split(',').map(parseFloat))
+                 .filter(a=>a.length===2&&!a.some(Number.isNaN));
+      if(v.length>=3)P=v;
+      return;
+    }
+    if(/^TOUR /i.test(p[0])){
+      const id=p[0].slice(5).trim();
+      const hm=p.find(v=>/^home /i.test(v));
+      const kf=p.slice(1).filter(v=>/^-?[\d.]+\s*,/.test(v))
+        .map(v=>v.split(',').map(parseFloat))
+        .filter(a=>a.length===3&&!a.some(Number.isNaN))
+        .map(([a,t,d])=>({a,t,d}));
+      TR.push({id,hd:hm?parseFloat(hm.slice(5)):20,tour:kf});
+      return;
+    }
+    if(/^CAM /i.test(p[0])){
+      const o={id:p[0].slice(4).trim(),on:/^ON/i.test(p[1]),
+        lens:/DUO/i.test(p[2])?'duo':'ptz',
+        x:g('x'),y:g('y'),z:g('z'),a:g('a'),t:g('t'),
+        name:p[p.length-1]||p[0],note:''};
+      if(Number.isNaN(o.z))o.z=10.5; if(Number.isNaN(o.t))o.t=15;
+      if(![o.x,o.y,o.a].some(Number.isNaN))C.push(o);
+    } else if(/^BOX /i.test(p[0])){
+      const quad=(tag,fb)=>{
+        const f=p.find(v=>new RegExp('^'+tag+' ','i').test(v));
+        if(f){const a=f.slice(tag.length+1).split('/').map(parseFloat);
+          if(a.length===4&&!a.some(Number.isNaN))return a;
+          if(a.length===1&&!Number.isNaN(a[0]))return [a[0],a[0],a[0],a[0]];}
+        const n=g(fb); return Number.isNaN(n)?null:[n,n,n,n];
+      };
+      const zt=quad('top','z1'), zb=quad('base','z0');
+      const o={id:p[0].slice(4).trim(),on:/^ON/i.test(p[1]),
+        x0:g('x0'),y0:g('y0'),x1:g('x1'),y1:g('y1'),zb,zt,
+        name:p[p.length-1]||p[0]};
+      if(zt&&zb&&![o.x0,o.y0,o.x1,o.y1].some(Number.isNaN))B.push(o);
+    }
+  });
+  TR.forEach(t=>{const c=C.find(v=>v.id===t.id); if(c){c.hd=t.hd;c.tour=t.tour;}});
+  return {C,B,P};
+}
+
+const decode=decodeRaw;
+/* ---------------- presets & buttons ---------------- */
+
+
+const PRESETS={
+ yours:[['ptz',-1.2,11.3,8.5,185],['ptz',-0.4,1.5,10.5,143],['ptz',25.7,2.2,8,329],
+        ['ptz',26,23.5,10.5,329],['ptz',1.7,25,10.5,48],['ptz',3.4,-0.6,11,316],['ptz',22.2,-0.8,11,224]],
+ duo2 :[['duo',12.5,-1,11,270],['duo',12.5,26,11,90],['ptz',-6.5,11,8.5,126],
+        ['ptz',33.5,3.5,8,312],['ptz',-1.5,-1.5,10.5,135],['ptz',26.5,26.5,10.5,309]],
+ duo4 :[['duo',12.5,-1,11,270],['duo',26,12.5,11,0],['duo',12.5,26,11,90],['duo',-1,12.5,11,180]]
+};
+document.querySelectorAll('[data-preset]').forEach(b=>b.onclick=()=>{
+  if(b.dataset.preset==='measured'){
+    loadMeasured(); sel=selBox=null; splat=null; render(); list();
+    toast('Measured house loaded'); return;
+  }
+  cams=PRESETS[b.dataset.preset].map(([lens,x,y,z,a],i)=>
+    ({id:'C'+(i+1),lens,x,y,z,a,t:15,name:LENS[lens].label,note:'',on:true}));
+  sel=null;render();list();toast('Cameras swapped — structures kept');
+});
+$('bFit').onclick=()=>resetView();
+$('bReset').onclick=()=>{loadMeasured();sel=selBox=null;splat=null;render();list();toast('Reset to measured house');};
+$('bAddCam').onclick=()=>{
+  let n=1; while(cams.some(c=>c.id==='C'+n))n++;
+  const c={id:'C'+n,lens:'ptz',x:-14,y:16,z:10.5,a:0,t:15,name:'New camera',note:'',on:true};
+  cams.push(c); sel=c.id; render(); list();
+};
+$('bAddBox').onclick=()=>{
+  let n=1; while(boxes.some(b=>b.id==='B'+n))n++;
+  const b={id:'B'+n,name:'New occluder',x0:-14,y0:-10,x1:-6,y1:-2,zb:[0,0,0,0],zt:[8,8,8,8],on:true};
+  boxes.push(b); selBox=b.id; sel=null; render(); list();
+};
+['tOcc','tId','tGrid','tz','rmode','tSplat','tTour','tFrus','tFence','fh'].forEach(i=>$(i).onchange=()=>{render();list();});
+$('tFence').onchange=()=>{fence.on=$('tFence').checked;splat=frusta=null;render();list();};
+$('fh').oninput=()=>{const v=parseFloat($('fh').value); if(!Number.isNaN(v)){fence.h=v;splat=frusta=null;render();list();}};
+$('bCopy').onclick=async()=>{const t=$('code');t.select();
+  try{await navigator.clipboard.writeText(t.value);toast('Copied');}catch(e){toast('Select and copy');}};
+$('bLoad').onclick=()=>{
+  const {C,B,P}=decode($('code').value);
+  if(!C.length&&!B.length&&!P){toast('Nothing recognised');return;}
+  if(C.length)cams=C; if(B.length)boxes=B; if(P)prop=P;
+  sel=selBox=null;selProp=false;splat=null;render();list();
+  toast(`Loaded ${C.length} cameras, ${B.length} occluders${P?', boundary':''}`);
+};
+/* ---------------- PT circuit animation ---------------- */
+const MOVE=1.5;                       // seconds to swing between stops
+let speed=4;                          // playback multiplier
+let playing=false, t0=0, snap=null, lastFrame=0;
+function timeline(c){
+  const S=stops(c), seg=[];
+  S.forEach((k,i)=>{
+    seg.push({kind:'hold',a:k.a,t:k.t,dur:k.d||8});
+    const n=S[(i+1)%S.length];
+    seg.push({kind:'move',a0:k.a,t0:k.t,a1:n.a,t1:n.t,dur:MOVE});
+  });
+  return seg;
+}
+const shortest=(a,b2)=>{let d=((b2-a+540)%360)-180;return a+d;};
+function poseAt(c,tau){
+  const seg=timeline(c), tot=seg.reduce((s,k)=>s+k.dur,0);
+  let u=tot?tau%tot:0;
+  for(const k of seg){
+    if(u<k.dur){
+      if(k.kind==='hold')return {a:k.a,t:k.t};
+      const f=u/k.dur, e=f*f*(3-2*f);            // ease in-out
+      return {a:norm(k.a0+(shortest(k.a0,k.a1)-k.a0)*e), t:k.t0+(k.t1-k.t0)*e};
+    }
+    u-=k.dur;
+  }
+  return {a:c.a,t:c.t};
+}
+function frame(ts){
+  if(!playing)return;
+  const tau=(ts-t0)/1000*speed;
+  cams.forEach(c=>{
+    if((c.lens||'ptz')!=='ptz'||!c.tour||!c.tour.length)return;
+    const base=snap[c.id]; if(!base)return;
+    const saveA=c.a,saveT=c.t; c.a=base.a; c.t=base.t;
+    const q=poseAt(c,tau); c.a=Math.round(q.a*10)/10; c.t=Math.round(q.t*10)/10;
+  });
+  if(ts-lastFrame>90){ lastFrame=ts; coarse=true; render(); }
+  requestAnimationFrame(frame);
+}
+function togglePlay(){
+  playing=!playing;
+  $('bPlay').setAttribute('aria-pressed',playing);
+  $('bPlay').textContent=playing?'❚❚ CIRCUIT':'▶ CIRCUIT';
+  if(playing){
+    if(!cams.some(c=>c.tour&&c.tour.length)){toast('No PT circuits defined');playing=false;
+      $('bPlay').textContent='▶ CIRCUIT';$('bPlay').setAttribute('aria-pressed',false);return;}
+    snap={}; cams.forEach(c=>snap[c.id]={a:c.a,t:c.t});
+    t0=performance.now(); lastFrame=0;
+    requestAnimationFrame(frame);
+  } else {
+    if(snap)cams.forEach(c=>{const b2=snap[c.id]; if(b2){c.a=b2.a;c.t=b2.t;}});
+    snap=null; coarse=false; render(); list();
+  }
+}
+$('bPlay').onclick=togglePlay;
+$('bSpeed').onclick=()=>{speed=speed===1?4:speed===4?10:1;$('bSpeed').textContent=speed+'×';};
+
+let tt;
+function toast(m){const t=$('toast');t.textContent=m;t.classList.add('on');
+  clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('on'),1900);}
+addEventListener('keydown',ev=>{
+  const t=ev.target.tagName;
+  if(t==='INPUT'||t==='TEXTAREA'||t==='SELECT'||ev.metaKey||ev.ctrlKey)return;
+  const k=ev.key.toLowerCase();
+  if(k==='2'){$('m2d').click();}
+  else if(k==='3'){$('m3d').click();}
+  else if(k==='4'){$('mpov').click();}
+  else if(k==='5'){$('msplit').click();}
+  else if(k===' '){togglePlay();}
+  else if(k==='f'){resetView();}
+  else if(k==='b'){const {P}=decodeRaw(MEASURED); if(P){prop=P;splat=null;render();list();
+    toast('Boundary restored — '+Math.round(polyArea()).toLocaleString()+' sq ft');}}
+  else if(k==='e'){selProp=!selProp;sel=null;selBox=null;render();list();}
+  else if(k==='s'){const c=$('tSplat');c.checked=!c.checked;render();list();}
+  else if(k==='v'){const c=$('tFrus');c.checked=!c.checked;render();list();}
+  else if(k==='o'){const c=$('tOcc');c.checked=!c.checked;splat=null;render();list();}
+  else if(k==='g'){const c=$('tGrid');c.checked=!c.checked;render();}
+  else if(k==='escape'){sel=null;selBox=null;selProp=false;render();list();}
+  else return;
+  ev.preventDefault();
+});
+addEventListener('resize',()=>render());
+loadMeasured();
+render(); list();
+</script>
+</body>
+</html>
