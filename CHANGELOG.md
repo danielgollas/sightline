@@ -32,7 +32,7 @@ First working version.
 - POV had no back-face culling, so a camera mounted 0.2 ft off a wall saw through it to the far side of the building
 - Surface normals came from winding order and were sometimes inverted, mislighting faces
 
-## webgl branch
+## 0.2.0
 
 Replaces the SVG painter's-algorithm 3D and camera views with a depth-buffered
 WebGL rasteriser, and swaps cast shadows for baked ambient occlusion.
