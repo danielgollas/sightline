@@ -1,24 +1,27 @@
 /* ------- splatter: which cameras actually see each patch of ground / structure ------- */
 // visibility of an arbitrary 3D point, ignoring the surface it sits on
+// This is blocked() with two differences: the point has an arbitrary height
+// rather than the target plane, and one occluder can be skipped (the surface
+// being shaded, which must not shadow itself). It goes through the same
+// hitsOccluder() as everything else - an earlier version inlined its own copy
+// of the box tests, which is precisely how it ended up calling a function that
+// no longer existed and throwing the moment splatter was switched on.
 function seesPoint(c,x,y,z,skip){
-  const L=lensOf(c);
+  const S=specOf(c);
   const dx=x-c.x, dy=y-c.y, dz=z-c.z, hd=Math.hypot(dx,dy);
-  if(hd>L.r||hd<0.3)return 0;
-  if(Math.abs(((deg(Math.atan2(dy,dx))-c.a+540)%360)-180)>L.f/2)return 0;
+  if(hd>detectFt(S)||hd<0.3)return 0;
+  if(Math.abs(((deg(Math.atan2(dy,dx))-c.a+540)%360)-180)>S.fovH/2)return 0;
   const e2=deg(Math.atan2(c.z-z,hd));
-  if(Math.abs(e2-(c.t||0))>L.vf/2)return 0;
+  if(Math.abs(e2-(c.t||0))>S.fovV/2)return 0;
   if(occOn()){
     for(const b of boxes){
       if(!b.on||b===skip)continue;
-      if(c.x>b.x0-.02&&c.x<b.x1+.02&&c.y>b.y0-.02&&c.y<b.y1+.02&&
-         c.z>baseAt(b,c.x,c.y)-.02&&c.z<topAt(b,c.x,c.y)+.02)continue;
-      if(isFlat(b)){
-        if(segHitsBox(c.x,c.y,c.z,dx,dy,dz,{x0:b.x0,y0:b.y0,x1:b.x1,y1:b.y1,z0:b.zb[0],z1:b.zt[0]}))return 0;
-      } else if(hitsWarped(c,dx,dy,dz,b))return 0;
+      if(insideOccluder(b,c.x,c.y,c.z))continue;
+      if(hitsOccluder(b,c.x,c.y,c.z,dx,dy,dz))return 0;
     }
     if(hitsFence(c.x,c.y,c.z,dx,dy,dz))return 0;
   }
-  return hd<=20?2:1;
+  return hd<=identifyFt(S)?2:1;
 }
 function bestAt(x,y,z,skip,nrm){
   let q=0,c=null;

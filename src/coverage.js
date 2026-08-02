@@ -91,7 +91,8 @@ function ensureWorker(){
     covWorker.onmessage=e=>{
       if(e.data.id!==covSeq)return;          // a newer request has superseded this
       covPending=null;
-      paintStats(e.data.result,false);
+      lastStats=e.data.result;
+      paintStats(lastStats,false);
     };
     covWorker.onerror=()=>{ covWorker=false; };   // fall back to the main thread
   }catch(err){ covWorker=false; }
@@ -114,14 +115,19 @@ const sceneMsg=()=>({
   opts:JSON.parse(JSON.stringify(opts))
 });
 
-let statTimer;
+let statTimer, lastStats=null;
 function updateStats(){
-  // coarse pass now, so the bar is never blank or wrong for long
-  paintStats(computeCoverage(3.0),true);
+  // Measured at ~22 ms, a coarse sweep is most of an idle render and a quarter
+  // of a frame budget mid-drag - spent on a figure the worker replaces 160 ms
+  // later anyway. So run it synchronously only when there is nothing at all to
+  // show; otherwise keep the previous numbers on screen, dimmed, until the
+  // worker answers.
+  if(lastStats===null && !coarse)lastStats=computeCoverage(3.0);
+  paintStats(lastStats,true);
   clearTimeout(statTimer);
   statTimer=setTimeout(()=>{
     const w=ensureWorker();
-    if(!w){ paintStats(computeCoverage(1.5),false); return; }
+    if(!w){ lastStats=computeCoverage(1.5); paintStats(lastStats,false); return; }
     covSeq++;
     covPending=covSeq;
     w.postMessage({...sceneMsg(), step:1.5, id:covSeq});

@@ -284,6 +284,27 @@ def main():
 
         page.click("#m3d")
         page.wait_for_timeout(2500)
+
+        # ---- 12. the 3D ray-cast overlays actually run ----
+        # seesPoint() once inlined its own copy of the box tests and ended up
+        # calling a function that had been removed, so splatter threw the
+        # moment it was switched on. Nothing here exercised it. Now it does.
+        overlays = page.evaluate("""() => {
+            const out = {};
+            try { out.frusta = buildFrusta().length; } catch(e){ out.frustaErr = String(e); }
+            try { out.splat = buildSplat().length; } catch(e){ out.splatErr = String(e); }
+            return out;
+        }""")
+        check("frustum solids build", overlays.get("frusta", 0) > 0, json.dumps(overlays))
+        check("splatter builds", overlays.get("splat", 0) > 0, json.dumps(overlays))
+
+        # and through the real UI path, with the layer toggles
+        page.evaluate("() => { opts.splat = true; opts.frus = true; render(); }")
+        page.wait_for_timeout(3000)
+        check("splatter renders through the UI", not errors, "; ".join(errors[:2]))
+        page.evaluate("() => { opts.splat = false; render(); }")
+        page.wait_for_timeout(500)
+
         check("no uncaught page errors", not errors, "; ".join(errors[:3]))
 
         browser.close()

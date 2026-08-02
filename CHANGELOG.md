@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.3.1
+
+Performance pass on the plan and 3D views, plus a splatter regression found
+while measuring.
+
+### The stutter
+Measured, not guessed. A camera drag cost 114 ms per pointer-move. Ablation
+put essentially all of it in one place: with cones switched off the rest of
+the plan view - grass, boxes, cameras, grid, the SVG itself - came to about
+1 ms, and the cone march to 85.
+
+Three causes, each fixed separately and measured:
+
+- **The cone march ran twice per camera.** `qual()` already returns 0/1/2, but
+  the detection and face-ID tiers each marched the whole cone and discarded
+  the other tier. One march now produces both.
+- **Cone geometry was rebuilt from screen coordinates every frame.** It is now
+  produced in world space and cached per camera, so panning and zooming
+  re-project rather than re-march, and dragging one camera leaves the other
+  five cached. Cache detail is deliberately not part of the key: a coarse
+  request reuses an existing fine result, which removes a hitch on the first
+  frame of every drag.
+- **A coarse coverage sweep ran synchronously on every render**, costing 22 ms
+  for a figure the worker replaces 160 ms later. It now runs only when there
+  is nothing at all to show; otherwise the previous numbers stay up, dimmed.
+
+### GC, not algorithms
+With those fixed, frames still spiked from 8 ms to 45 on no particular
+schedule while doing an identical amount of work. That was garbage collection:
+`drawPlan` tore down and rebuilt all ~250 SVG nodes per pointer-move. The plan
+is now built in four layers - base, cones, occluders, cameras - of which base
+and occluders are cached against the geometry, view transform and selection.
+Dragging a camera rebuilds about 50 nodes instead of 250, and measures zero
+static rebuilds across a whole drag.
+
+The split is by paint order, not convenience: cones must draw over the grass
+but under the buildings, or a building stops visually occluding the coverage
+it blocks.
+
+### 3D overlays cached
+Frustum solids and splatter are ray-cast, at roughly 30 ms and 100 ms. Every
+property edit in 3D was paying for both. They now cache against the geometry,
+the camera poses and the coverage options.
+
+### Measured
+| interaction | before | after |
+|---|---|---|
+| camera drag | 114 ms/frame | 10.8 |
+| background pan | ~114 ms/frame | 2.8 |
+| idle render | 25 ms | 4.3 |
+| 3D render | 31.5 ms | 7.6 |
+
+What remains is the one genuine re-march of the camera being dragged, 9.2 of
+those 10.8 ms.
+
+### Splatter was broken
+`seesPoint()` still called `hitsWarped`, which was removed when the shape tests
+moved into `shapes.js` in 0.3.0. Switching splatter on threw immediately.
+Nothing in the verification suite turned it on, so it shipped.
+
+It now goes through the same `hitsOccluder()` as everything else, which also
+means it picks up transforms, cylinders and the DORI tiers rather than the old
+hardcoded 20 ft face-ID line. `tests/verify.py` now builds both overlays and
+renders splatter through the UI - 30 checks.
+
+### Occluders draw rotated in plan
+The plan view drew every occluder as an axis-aligned rectangle, so a yawed or
+parented one appeared unrotated while blocking rays where it actually was.
+
 ## 0.3.0
 
 Equipment catalog, a scene tree, occluder transforms and project persistence.
