@@ -9,32 +9,47 @@ This document is about the code.
 
 ## Shape of the thing
 
-One file. `index.html`, ~2,570 lines, no build step, no dependencies, no network
-access. Open it and it runs.
+Source lives in `src/*.js`. `index.html` is **generated** — `node scripts/build.js`
+concatenates the modules listed in `src/manifest.json` into
+`src/index.template.html` at the `/*MODULES*/` marker. Edit `src/`, run the
+build, commit both.
 
-**Single-file is a correctness property, not a style preference.** An earlier
-revision split the renderer into `gl.js` and `mesh.js` and it silently broke
-anywhere the siblings could not be fetched — sandboxed viewer, email attachment,
-file on a USB stick. The plan view kept working, so the breakage was easy to
-miss. If you split it, you own that failure mode.
+**The single-file rule now applies to the artifact, not the source.** The
+published `index.html` still has no imports, no bundler runtime and no sibling
+fetches, because an earlier revision split the renderer into `gl.js` and
+`mesh.js` and silently broke anywhere the siblings could not be fetched —
+sandboxed viewer, email attachment, file on a USB stick. That failure mode is
+still real; the build is what keeps it away from users. If you make the
+published file load anything from beside itself, you own it.
 
-Section markers are `/* ------- name ------- */` comments. Rough map:
+The split was done mechanically and verified byte-identical against the
+pre-split file (`scripts/split-once.js` is kept for that provenance). If you
+ever doubt the build, that check is the one to repeat.
 
-| Lines | Section |
+**The equipment catalog is the one deliberate exception.** `catalog/*.json` is
+fetched at runtime and therefore does *not* work from `file://`. That is an
+accepted trade-off, not an oversight: every project embeds a copy of the
+catalog entries it uses, so a saved scene is self-describing anywhere. Only a
+brand-new project opened from disk sees an empty picker, and it says so.
+
+Modules, roughly in dependency order:
+
+| Module | What it owns |
 |---|---|
-| 225–470 | `GL` — matrix helpers, shaders, context, draw call |
-| 471–700 | `MESH` — scene ray caster, AO bake, mesh builder |
-| 705–830 | State, lens table, defaults, the `MEASURED` preset |
-| 828–940 | 3D occlusion: the coverage model's core |
-| 939–1030 | World/screen transform, coverage raster, vector cones |
-| 1031–1160 | Plan view (SVG) |
-| 1162–1300 | Splatter and frustum solids |
-| 1304–1380 | Materials, sun |
-| 1377–1680 | Camera POV |
-| 1680–1830 | 3D view (SVG overlay for handles) |
-| 1828–1995 | WebGL scene wiring and `render()` |
-| 1996–2165 | Interaction: plan and 3D |
-| 2165–2570 | Side panel, layout code, presets, PT animation |
+| `gl.js` | matrix helpers, shaders, context, draw call |
+| `mesh.js` | AO bake, mesh builder, the bake's ray caster |
+| `util.js` | tiny helpers; `lensOf()` derives the old lens shape from a spec |
+| `state.js` | scene state, `opts`, occluder presets, legacy migration |
+| `shapes.js` | **transforms and every shape intersection test** |
+| `catalog.js` | catalog merge/variants, pixel density, DORI ranges |
+| `occlusion.js` | `blocked()`, `qual()`, PT sweep — the coverage core |
+| `raster.js` `cones.js` `plan.js` | plan view |
+| `splat.js` `frusta.js` `materials.js` | 3D overlays |
+| `pov.js` `view3d.js` `glscene.js` | camera views and WebGL wiring |
+| `coverage.js` | the sweep, and the worker assembled from its own source |
+| `project.js` | persistence, import/export, cost and storage maths |
+| `tree.js` `addmenu.js` `props.js` `statusbar.js` | the sidebar UI |
+| `interact.js` `anim.js` | pointer handling, PT animation, boot |
 
 ---
 
@@ -50,10 +65,23 @@ numbers cannot disagree. If you add a rendering path that computes visibility
 its own way, you have broken the premise, and the failure will be quiet — a
 picture that looks plausible while the percentages say something else.
 
-`MESH.makeCaster` deliberately mirrors `blocked()` rather than sharing it,
-because the AO bake needs a hot loop without the layer-toggle lookups. **If you
-change occlusion semantics in one, change the other.** This is the sharpest edge
-in the codebase.
+`MESH.makeCaster` used to *mirror* `blocked()` by hand, and this guide used to
+warn that changing one meant changing the other. **That is no longer true, and
+the change was deliberate.** Both now call `hitsOccluder()` in `shapes.js`.
+What stays separate is loop policy: the caster skips the layer toggles because
+it runs in the bake's hot loop, and it takes an unbounded ray with a `maxT`
+rather than a 0..1 segment.
+
+The coverage worker in `coverage.js` is held to the same rule by a different
+trick: it is assembled from the **source text** of the live functions via
+`Function.prototype.toString`, so it cannot be running different logic. If you
+add a function the sweep reaches, add it to the list in `workerSource()` — a
+missing one is a loud `ReferenceError`, not a wrong number.
+
+`tests/verify.py` asserts `blocked()` and `makeCaster` agree on a sampled ray
+set across box, cylinder and ellipsoid, and that the worker reproduces the
+main-thread sweep exactly. Those are the checks to run before you trust any
+change in here.
 
 ---
 
@@ -76,6 +104,15 @@ scene and the observer together leaves the image unchanged. Do not try it again.
 
 Angles: `a` is a bearing, 0 = east, 90 = south. `t` is down-tilt in degrees,
 positive looking down.
+
+**Occluders now carry a transform.** Each has `parent`, `yaw` and a local
+frame; `worldM()` composes the chain. Intersection does *not* use oriented-box
+maths — the ray is transformed into the occluder's local frame and the original
+axis-aligned slab test runs there unchanged. With `yaw` 0 and no parent the
+matrix is exactly the identity, which is why every pre-transform scene still
+reads as world coordinates. Only yaw is exposed; the pipeline is a general 4x4
+so pitch and roll are a UI change rather than an architecture change, but note
+that the bilinear warped-top code assumes z-up and would need revisiting.
 
 ---
 
@@ -141,9 +178,21 @@ was a convex-hull approximation that could not represent a hole.
 
 ## Testing
 
-There is no test suite. Everything in the changelog was verified with Playwright
-driving the page and reading pixels or internals back. That approach found every
-real bug; reasoning about correctness did not.
+`tests/verify.py` drives the real page with Playwright — 27 checks covering
+transforms, the `blocked()`/`makeCaster` agreement, cylinder and ellipsoid
+primitives, DORI ranges against hand arithmetic, catalog variant/dedup rules,
+localStorage round-trip, the worker, and the measured AO invariants.
+
+```
+python3 -m venv pwenv && ./pwenv/bin/pip install playwright
+./pwenv/bin/playwright install chromium
+python3 -m http.server 8731 &            # the catalog needs http, not file://
+./pwenv/bin/python tests/verify.py
+```
+
+Beyond that, everything in the changelog was verified the same way — driving
+the page and reading internals back. That approach found every real bug;
+reasoning about correctness did not.
 
 Pattern that works:
 
@@ -166,6 +215,24 @@ Check your test's expectations before concluding the code is wrong. A "mirrored"
 verdict was a white marker being confused with the white house; a "compressed
 projection" was sampling a cone instead of the camera's own horizontal plane.
 Both looked like real bugs.
+
+---
+
+## Range model
+
+Camera range is derived from resolution and field of view, not typed in.
+Density is **angular**, because the camera views are a cylindrical projection:
+
+    pxPerM(d) = resW / (fovH_radians * d)
+
+The textbook rectilinear form, `resW / (2 d tan(h/2))`, is wrong here and not
+subtly: at the Duo's 189 degrees `tan(94.5)` diverges and it returns a range
+under a foot. Do not "correct" it back.
+
+Two tiers, on EN 62676-4 (DORI): face-ID at identify (250 px/m), detection at
+recognise (125 px/m). Both are clamped — in daylight by an optional per-camera
+`maxRangeFt`, at night by `max(irFt, floodlightFt)`, and a camera with neither
+contributes nothing at night.
 
 ---
 

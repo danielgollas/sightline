@@ -23,22 +23,15 @@ const hex=h=>[parseInt(h.slice(1,3),16)/255,
               parseInt(h.slice(5,7),16)/255];
 
 /* ---------- ray intersection against the scene ---------- */
-// Mirrors the occlusion model: axis-aligned solids with bilinear top and
-// base surfaces, plus the vertical fence panels on the property boundary.
+// The AO bake used to carry its own copy of the occlusion maths, and the
+// developer guide warned that the copy and blocked() had to be changed in
+// lockstep or they would diverge silently. They no longer diverge: both call
+// hitsOccluder() in shapes.js. What stays separate is the loop policy - this
+// one skips the layer toggles because it runs in the bake's hot loop, and it
+// takes an unbounded ray with a maxT rather than a 0..1 segment.
 function makeCaster(env){
-  const {boxes,prop,fence,baseAt,topAt,flatT,flatB}=env;
+  const {boxes,prop,fence}=env;
   const solids=boxes.filter(b=>b.on);
-
-  function xySpan(ox,oy,dx,dy,b){
-    let t0=0,t1=Infinity;
-    for(const[o,d,lo,hi]of [[ox,dx,b.x0,b.x1],[oy,dy,b.y0,b.y1]]){
-      if(Math.abs(d)<1e-9){ if(o<lo||o>hi)return null; continue; }
-      let a=(lo-o)/d, z=(hi-o)/d; if(a>z){const s=a;a=z;z=s;}
-      if(a>t0)t0=a; if(z<t1)t1=z;
-      if(t0>t1)return null;
-    }
-    return [t0,t1];
-  }
 
   // does anything block the segment from origin out to maxT?
   return function occluded(ox,oy,oz,dx,dy,dz,maxT,ignore){
@@ -46,27 +39,11 @@ function makeCaster(env){
       const t=-oz/dz;
       if(t>1e-3&&t<maxT)return true;              // the ground itself
     }
+    // scale the direction so the shared test's 0..1 segment spans 0..maxT
+    const sx=dx*maxT, sy=dy*maxT, sz=dz*maxT;
     for(const b of solids){
       if(b===ignore)continue;
-      const r=xySpan(ox,oy,dx,dy,b);
-      if(!r)continue;
-      const lo=Math.max(r[0],1e-3), hi=Math.min(r[1],maxT);
-      if(lo>=hi)continue;
-      if(flatT(b)&&flatB(b)){
-        const z0=b.zb[0],z1=b.zt[0];
-        let a=lo,z=hi;
-        if(Math.abs(dz)<1e-9){ if(oz<z0||oz>z1)continue; return true; }
-        let ta=(z0-oz)/dz, tb=(z1-oz)/dz;
-        if(ta>tb){const s=ta;ta=tb;tb=s;}
-        if(Math.max(a,ta)<=Math.min(z,tb))return true;
-      } else {
-        const N=14;
-        for(let i=0;i<=N;i++){
-          const t=lo+(hi-lo)*i/N;
-          const x=ox+dx*t,y=oy+dy*t,z=oz+dz*t;
-          if(z>=baseAt(b,x,y)&&z<=topAt(b,x,y))return true;
-        }
-      }
+      if(hitsOccluder(b,ox,oy,oz,sx,sy,sz))return true;
     }
     if(fence.on&&fence.h>0){
       for(let i=0;i<prop.length;i++){
@@ -181,11 +158,61 @@ function build(env){
     return (c[0]*n[0]+c[1]*n[1]+c[2]*n[2])>=0?P:[P[0],P[3],P[2],P[1]];
   };
 
+  // A cylinder as a tessellated tube with a cap, plus an ellipsoid canopy for
+  // the tree preset. Tessellated for the same reason every other surface is:
+  // AO is a vertex attribute and a two-triangle wall carries no gradient.
+  function tube(b,c,w){
+    const cx=(b.x0+b.x1)/2, cy=(b.y0+b.y1)/2;
+    const z0=zmin(b), z1=zmax(b), r=b.r||0.5;
+    const SEG=12, RINGS=Math.max(2,Math.min(8,Math.round((z1-z0)/2.2)));
+    const at=(i,k)=>{
+      const a=2*Math.PI*i/SEG;
+      return w([cx+Math.cos(a)*r, cy+Math.sin(a)*r, z0+(z1-z0)*k/RINGS]);
+    };
+    for(let i=0;i<SEG;i++)for(let k=0;k<RINGS;k++){
+      const P=[at(i,k),at(i+1,k),at(i+1,k+1),at(i,k+1)];
+      const a=2*Math.PI*(i+0.5)/SEG;
+      let n=[Math.cos(a),Math.sin(a),0];
+      n=env.xformDir(env.worldM(b),n);
+      quad(wound(P,n),n,c,b,2.2);
+    }
+    // cap
+    const top=[at(0,RINGS),at(Math.floor(SEG/4),RINGS),at(Math.floor(SEG/2),RINGS),at(Math.floor(3*SEG/4),RINGS)];
+    quad(wound(top,[0,0,1]),[0,0,1],c,b,2.2);
+
+    if(b.shape!=='tree')return;
+    const rad=b.canopyR||Math.max(r*3,3), h=b.canopyH||rad*1.3;
+    const ccz=z1+h*0.35;
+    const leaf=hex(MAT.grassLit||'#5E8C48');
+    const LAT=6, LON=10;
+    const pt=(u,v)=>{
+      const th=Math.PI*u/LAT, ph=2*Math.PI*v/LON;
+      return w([cx+rad*Math.sin(th)*Math.cos(ph), cy+rad*Math.sin(th)*Math.sin(ph), ccz+h*Math.cos(th)]);
+    };
+    for(let u=0;u<LAT;u++)for(let v=0;v<LON;v++){
+      const P=[pt(u,v),pt(u+1,v),pt(u+1,v+1),pt(u,v+1)];
+      const mid=pt(u+0.5,v+0.5);
+      let n=[mid[0]-cx,mid[1]-cy,mid[2]-ccz];
+      const l=Math.hypot(...n)||1; n=n.map(q=>q/l);
+      quad(wound(P,n),n,leaf,b,2.2);
+    }
+  }
+
   /* structures */
+  // Corners come out of TC/BC in the occluder's own frame; worldM carries them
+  // up through any parent chain. With no yaw and no parent this is the
+  // identity, so an untransformed scene emits exactly the vertices it always
+  // did.
+  const W=b=>{
+    const m=env.worldM(b);
+    return p=>env.xformPt(m,p);
+  };
   boxes.forEach(b=>{
     if(!b.on)return;
     const c=hex(matOf(b));
-    const T=TC(b), B=BC(b);
+    const w=W(b);
+    if(b.shape==='cyl'||b.shape==='tree'){ tube(b,c,w); return; }
+    const T=TC(b).map(w), B=BC(b).map(w);
     const faces=[
       [T[0],T[1],T[2],T[3]],                                        // top
       [B[0],B[1],B[2],B[3]],                                        // base

@@ -7,7 +7,7 @@ function castRay3(c,azm,elv2,maxR){
   const dx=Math.cos(a)*Math.cos(e), dy=Math.sin(a)*Math.cos(e), dz=-Math.sin(e);
   let lim=maxR;
   if(dz<-1e-6)lim=Math.min(lim,(0-c.z)/dz);            // ground plane
-  if($('tOcc').checked){
+  if(occOn()){
     const step=0.6;
     for(let t=0.5;t<lim;t+=step){
       const x=c.x+dx*t, y=c.y+dy*t, z=c.z+dz*t;
@@ -29,7 +29,7 @@ function buildFrusta(){
     if(!c.on)return;
     if(sel&&sel!==c.id)return;
     const L=lensOf(c), k=colC(c);
-    const list=($('tTour').checked)?stops(c):[{a:c.a,t:c.t||0,d:1}];
+    const list=(tourOn())?stops(c):[{a:c.a,t:c.t||0,d:1}];
     list.forEach((st,si)=>{
       const NA=Math.max(6,Math.round(L.f/12)), NV=5;
       const grid=[];

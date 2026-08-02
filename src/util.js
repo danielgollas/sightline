@@ -15,10 +15,15 @@ const txt=(at,s)=>{const e=el('text',at);e.textContent=s;return e;};
 // the recorded image simply is not rectilinear. Modelling it as linear in
 // bearing and tangent in elevation, stretched to the sensor, is closer to what
 // they actually produce than pretending it is a pinhole.
-const LENS={
-  ptz:{f:88 ,vf:41.5,r:40,sensor:3840/2160,label:'E1 SE PTZ 88°'},
-  duo:{f:189,vf:55  ,r:65,sensor:7680/2160,label:'Duo 3/3V 189°'}
+// The render paths (POV, cones, frusta, 3D) ask a camera for its lens in the
+// shape they have always used. That shape is now derived from the camera's
+// catalog spec rather than looked up in a table of two: `r` in particular is
+// no longer a constant but the DORI recognise distance for this sensor and
+// field of view, clamped by what the camera can light at night.
+const lensOf=c=>{
+  const S=specOf(c);
+  return {f:S.fovH, vf:S.fovV, r:detectFt(S), sensor:S.resW/S.resH,
+          label:`${S.brand} ${S.model}`};
 };
-const lensOf=c=>LENS[c.lens||'ptz'];
 const PAL=['#E8A33D','#4FB3C4','#C97FA0','#93BF63','#B49BE0','#E0785C','#63BFA6','#D9C25E'];
 

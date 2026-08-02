@@ -7,7 +7,7 @@ function seesPoint(c,x,y,z,skip){
   if(Math.abs(((deg(Math.atan2(dy,dx))-c.a+540)%360)-180)>L.f/2)return 0;
   const e2=deg(Math.atan2(c.z-z,hd));
   if(Math.abs(e2-(c.t||0))>L.vf/2)return 0;
-  if($('tOcc').checked){
+  if(occOn()){
     for(const b of boxes){
       if(!b.on||b===skip)continue;
       if(c.x>b.x0-.02&&c.x<b.x1+.02&&c.y>b.y0-.02&&c.y<b.y1+.02&&

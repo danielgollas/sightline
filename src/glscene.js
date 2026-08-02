@@ -1,12 +1,19 @@
 /* ---------------- WebGL scene ---------------- */
 let glCtx=null, glCells=new Map(), meshCache=null, meshKey='';
 function sceneKey(){
-  return JSON.stringify([boxes.map(b=>[b.on,b.x0,b.y0,b.x1,b.y1,b.zb,b.zt,b.name]),
+  // Anything that moves a vertex has to appear here or the bake goes stale.
+  // yaw, parent, shape and the cylinder radii are as load-bearing as x0/y0.
+  return JSON.stringify([boxes.map(b=>[b.on,b.x0,b.y0,b.x1,b.y1,b.zb,b.zt,b.name,
+                                       b.yaw||0,b.parent||'',b.shape||'box',
+                                       b.r||0,b.canopyR||0,b.canopyH||0]),
                          prop,fence]);
 }
 function env(){
   return {boxes,prop,fence,MAT,matOf,XY,TC,BC,baseAt,topAt,inProp,zmin,zmax,
-          flatT,flatB};
+          flatT,flatB,
+          // the transform pipeline, so the bake places vertices where the
+          // occlusion maths says the solids actually are
+          worldM,xformPt:TX.xformPt,xformDir:TX.xformDir};
 }
 function ensureMesh(){
   const k=sceneKey();

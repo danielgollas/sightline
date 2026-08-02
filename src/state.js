@@ -92,6 +92,59 @@ function fenceDist(ox,oy,oz,dx,dy,dz,max){
 }
 let GLON=true;
 let cams=DEF_CAMS(), boxes=DEF_BOXES(), sel=null, selBox=null, mode='2d', splat=null, frusta=null, povMax=null;
+let nvrs=[], selNvr=null;
+
+/* ---------------- scene options ---------------- */
+// These used to be checkboxes in the right panel. The panel is gone; the
+// options are scene state, saved with the project, and reached through
+// accessors so no render path has to know where they live.
+let opts={
+  tz:3,            // target height, feet
+  draw:'cones',    // 'cones' | 'heat'
+  occ:true, id:true, tour:false, frus:true, splat:false, grid:true,
+  night:false,     // limits camera range to IR / floodlight distance
+  fps:15, quality:'med'   // project-level recording defaults
+};
+const occOn=()=>opts.occ, tourOn=()=>opts.tour, idOn=()=>opts.id,
+      gridOn=()=>opts.grid, frusOn=()=>opts.frus, splatOn=()=>opts.splat,
+      targetZ=()=>opts.tz, drawMode=()=>opts.draw, night=()=>opts.night;
+
+// Bumped once per render. Transform matrices cache against it, so they can be
+// stale for at most a frame and never need manual invalidation on edit.
+let sceneGen=0;
+
+/* ---------------- occluder shapes ---------------- */
+// Presets seed a shape; they are not separate entity types. 'cyl' and 'tree'
+// carry a radius, everything else is the box that has always been here.
+const OCC_PRESETS={
+  building:{name:'Building', shape:'box', w:20,d:16, base:0, top:18},
+  roof    :{name:'Sloped roof', shape:'box', w:12,d:8, base:8, top:11, slope:2.5},
+  post    :{name:'Column / post', shape:'cyl', w:1, d:1, base:0, top:9, r:0.5},
+  fence   :{name:'Fence run', shape:'box', w:20,d:0.5, base:0, top:6},
+  tree    :{name:'Tree', shape:'tree', w:2,d:2, base:0, top:10, r:0.7, canopyR:7, canopyH:8}
+};
+function makeOccluder(kind,at){
+  const P=OCC_PRESETS[kind]||OCC_PRESETS.building;
+  let n=1; while(boxes.some(b=>b.id==='B'+n))n++;
+  const x0=at?at.x:-14, y0=at?at.y:-10;
+  const b={id:'B'+n, name:P.name, shape:P.shape,
+    x0, y0, x1:x0+P.w, y1:y0+P.d,
+    zb:[P.base,P.base,P.base,P.base],
+    zt:[P.top,P.top,P.top,P.top],
+    yaw:0, parent:null, on:true};
+  if(P.slope){ b.zb=[P.base,P.base+P.slope,P.base+P.slope,P.base];
+               b.zt=[P.top,P.top+P.slope,P.top+P.slope,P.top]; }
+  if(P.r){ b.r=P.r; }
+  if(P.canopyR){ b.canopyR=P.canopyR; b.canopyH=P.canopyH; }
+  return b;
+}
+// children first is what the tree renders; the flat list stays authoritative
+const childrenOf=id=>boxes.filter(b=>(b.parent||null)===id);
+function setParent(b,pid){
+  if(pid && (pid===b.id || wouldCycle(b,pid)))return false;
+  b.parent=pid||null;
+  return true;
+}
 function polyArea(){
   let a=0;
   for(let i=0,j=prop.length-1;i<prop.length;j=i++)
@@ -118,6 +171,44 @@ function loadMeasured(){
   if(C.length)cams=C;
   if(B.length)boxes=B;
   prop=P?P:DEF_PROP();
+  migrateScene();
+  // One recorder, holding every camera. Without it the tree has cameras with
+  // no parent and the status bar has no storage to report against.
+  nvrs=[{id:'N1',name:'Main recorder',catKey:'reolink-rln8-410',on:true,
+    spec:{id:'reolink-rln8-410',brand:'Reolink',model:'RLN8-410',channels:8,
+      storageGB:2000,maxStorageGB:12000,poePorts:8,compat:['reolink'],checked:'2026-08-02'}}];
+  cams.forEach(c=>{ if(!c.nvr)c.nvr='N1'; });
+  CAT.seedFromProject(projectSnapshot());
 }
 const colC=c=>PAL[cams.indexOf(c)%PAL.length];
+
+/* ---------------- legacy migration ---------------- */
+// Scenes written before the catalog existed carry lens:'ptz'|'duo'. Each maps
+// to a real catalog entry, and a copy of that entry is embedded on the camera
+// so the scene still resolves with no catalog present at all.
+const LEGACY_KEY={ptz:'reolink-e1-outdoor-se', duo:'reolink-duo-3v-poe'};
+const LEGACY_SPEC={
+  'reolink-e1-outdoor-se':{id:'reolink-e1-outdoor-se',brand:'Reolink',model:'E1 Outdoor SE',
+    resolution:{w:3840,h:2160},fovH:88,fovV:41.5,ptz:true,irFt:98,poe:false,wifi:true,
+    formats:['H.265','H.264'],compat:['reolink'],checked:'2026-08-02'},
+  'reolink-duo-3v-poe':{id:'reolink-duo-3v-poe',brand:'Reolink',model:'Duo 3V PoE',
+    resolution:{w:7680,h:2160},fovH:189,fovV:55,ptz:false,irFt:100,poe:true,wifi:false,
+    formats:['H.265','H.264'],compat:['reolink'],checked:'2026-08-02'}
+};
+function migrateCam(c){
+  if(!c.catKey){
+    c.catKey=LEGACY_KEY[c.lens||'ptz']||LEGACY_KEY.ptz;
+    c.spec=LEGACY_SPEC[c.catKey];
+  }
+  if(c.yaw===undefined)c.yaw=0;
+  delete c._spec;
+  return c;
+}
+function migrateBox(b){
+  if(b.shape===undefined)b.shape='box';
+  if(b.yaw===undefined)b.yaw=0;
+  if(b.parent===undefined)b.parent=null;
+  return b;
+}
+const migrateScene=()=>{ cams.forEach(migrateCam); boxes.forEach(migrateBox); };
 

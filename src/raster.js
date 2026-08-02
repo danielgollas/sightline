@@ -3,10 +3,10 @@ const cov=$('cov'), cx2=cov.getContext('2d');
 function paintCoverage(coarse){
   cov.width=W; cov.height=H;
   cx2.clearRect(0,0,W,H);
-  const tz=parseFloat($('tz').value);
+  const tz=targetZ();
   const step=coarse?2.2:1.1;                       // world ft per sample
   const px=Math.max(2,Math.ceil(step*T.s));
-  const showId=$('tId').checked;
+  const showId=idOn();
   const live=cams.filter(c=>c.on);
   const wx0=sx(0),wy0=sy(0),wx1=sx(W),wy1=sy(H);
   for(let gx=wx0;gx<wx1;gx+=step){

@@ -68,7 +68,7 @@ function draw3d(){
     items.push({d:-1e6,e:el('line',{x1:a.x,y1:a.y,x2:b.x,y2:b.y,stroke:'#1E2732','stroke-width':1})});
     items.push({d:-1e6,e:el('line',{x1:c.x,y1:c.y,x2:d.x,y2:d.y,stroke:'#1E2732','stroke-width':1})});
   }
-  if($('tFrus').checked&&frusta&&!orbit){
+  if(frusOn()&&frusta&&!orbit){
     frusta.forEach(f=>{
       const P=f.p.map(([x,y,z])=>proj(x,y,z));
       items.push({d:P.reduce((s,q)=>s+q.d,0)/P.length,
@@ -76,7 +76,7 @@ function draw3d(){
           fill:f.col,'fill-opacity':f.a,stroke:f.col,'stroke-opacity':f.a*0.5,'stroke-width':.4})});
     });
   }
-  if($('tSplat').checked&&splat&&!orbit){
+  if(splatOn()&&splat&&!orbit){
     splat.forEach(sp=>{
       const P=sp.p.map(([x,y,z])=>proj(x,y,z));
       items.push({d:P.reduce((s,q)=>s+q.d,0)/4+0.35,
@@ -127,7 +127,7 @@ function draw3d(){
     const base=proj(c.x,c.y,0), top=proj(c.x,c.y,c.z);
     items.push({d:top.d,e:el('line',{x1:base.x,y1:base.y,x2:top.x,y2:top.y,
       stroke:k,'stroke-width':1,'stroke-opacity':.45,'stroke-dasharray':'3 3'})});
-    if(!$('tFrus').checked)
+    if(!frusOn())
     [-L.f/2,0,L.f/2].forEach(off=>{
       [-L.vf/2,L.vf/2].forEach(vo=>{
         const aa=rad(c.a+off), tt=rad((c.t||0)+vo);

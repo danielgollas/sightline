@@ -1,71 +1,45 @@
 /* ---------------- 3D occlusion ---------------- */
-// slab test: does segment o->o+d hit the axis-aligned box?
-function segHitsBox(ox,oy,oz,dx,dy,dz,b){
-  let t0=0,t1=1;
-  const ax=[[ox,dx,b.x0,b.x1],[oy,dy,b.y0,b.y1],[oz,dz,b.z0,b.z1]];
-  for(const[o,d,lo,hi]of ax){
-    if(Math.abs(d)<1e-9){ if(o<lo||o>hi)return false; continue; }
-    let a=(lo-o)/d, z=(hi-o)/d;
-    if(a>z){const s=a;a=z;z=s;}
-    if(a>t0)t0=a; if(z<t1)t1=z;
-    if(t0>t1)return false;
-  }
-  return t1>1e-4 && t0<1-1e-4;
-}
-// where does the segment enter/exit the box footprint in xy?
-function xyRange(ox,oy,dx,dy,b){
-  let t0=0,t1=1;
-  for(const[o,d,lo,hi]of [[ox,dx,b.x0,b.x1],[oy,dy,b.y0,b.y1]]){
-    if(Math.abs(d)<1e-9){ if(o<lo||o>hi)return null; continue; }
-    let a=(lo-o)/d, z=(hi-o)/d; if(a>z){const s=a;a=z;z=s;}
-    if(a>t0)t0=a; if(z<t1)t1=z;
-    if(t0>t1)return null;
-  }
-  return [t0,t1];
-}
-function hitsWarped(c,dx,dy,dz,b){
-  const r=xyRange(c.x,c.y,dx,dy,b); if(!r)return false;
-  const N=22;
-  for(let i=0;i<=N;i++){
-    const t=r[0]+(r[1]-r[0])*i/N;
-    if(t<=1e-4||t>=1-1e-4)continue;
-    const px=c.x+dx*t, py=c.y+dy*t, pz=c.z+dz*t;
-    if(pz>=baseAt(b,px,py) && pz<=topAt(b,px,py))return true;
-  }
-  return false;
-}
+/*
+   Everything that answers "can this camera see that point" still funnels
+   through quality() / blocked(). The shape tests themselves now live in
+   shapes.js so the AO bake's caster cannot drift from this code.
+*/
 function blocked(c,x,y,tz){
-  if(!$('tOcc').checked)return false;
+  if(!occOn())return false;
   const dx=x-c.x, dy=y-c.y, dz=tz-c.z;
   for(const b of boxes){
     if(!b.on)continue;
-    // a camera inside a box's own volume isn't blocked by it (mounted under a roof)
-    if(c.x>b.x0-.02&&c.x<b.x1+.02&&c.y>b.y0-.02&&c.y<b.y1+.02&&
-       c.z>baseAt(b,c.x,c.y)-.02&&c.z<topAt(b,c.x,c.y)+.02)continue;
-    if(isFlat(b)){
-      if(segHitsBox(c.x,c.y,c.z,dx,dy,dz,{x0:b.x0,y0:b.y0,x1:b.x1,y1:b.y1,z0:b.zb[0],z1:b.zt[0]}))return true;
-    } else if(hitsWarped(c,dx,dy,dz,b))return true;
+    // a camera inside an occluder's own volume isn't blocked by it
+    // (mounted under a roof, on a post, inside a porch)
+    if(insideOccluder(b,c.x,c.y,c.z))continue;
+    if(hitsOccluder(b,c.x,c.y,c.z,dx,dy,dz))return true;
   }
   if(hitsFence(c.x,c.y,c.z,dx,dy,dz))return true;
   return false;
 }
-// 0 none, 1 detection, 2 face-ID
+// 0 none, 1 detection, 2 face-ID.
+//
+// The two tiers are DORI recognise and identify computed from the camera's
+// own resolution and field of view, so a 4K camera genuinely outreaches a 2K
+// one. Both are clamped by what the camera can light: at night that is IR or
+// floodlight distance, and a camera with neither contributes nothing.
 function qual(c,x,y,tz,aim,tlt){
-  const L=lensOf(c);
+  const S=specOf(c);
   const dx=x-c.x, dy=y-c.y;
   const hd=Math.hypot(dx,dy);
-  if(hd>L.r)return 0;
+  const far=detectFt(S);
+  if(hd>far)return 0;
   const az=deg(Math.atan2(dy,dx));
-  if(Math.abs(((az-aim+540)%360)-180)>L.f/2)return 0;
+  if(Math.abs(((az-aim+540)%360)-180)>S.fovH/2)return 0;
   const elv=deg(Math.atan2(c.z-tz,Math.max(hd,1e-6)));   // + = looking down
-  if(Math.abs(elv-tlt)>L.vf/2)return 0;
+  if(Math.abs(elv-tlt)>S.fovV/2)return 0;
   if(blocked(c,x,y,tz))return 0;
-  return hd<=20?2:1;
+  return hd<=identifyFt(S)?2:1;
 }
 // every stop in the circuit: home first, then keyframes
 function stops(c){
   const home={a:c.a,t:c.t||0,d:c.hd||20};
-  if((c.lens||'ptz')!=='ptz'||!c.tour||!c.tour.length)return [home];
+  if(!specOf(c).ptz||!c.tour||!c.tour.length)return [home];
   return [home,...c.tour];
 }
 // Bounce playback: 1 -> 2 -> 3 -> 2 -> 1, not 1 -> 2 -> 3 -> 1.
@@ -105,7 +79,6 @@ function swept(c,x,y,tz){
   return {q,frac:tot?seen/tot:0};
 }
 function quality(c,x,y,tz){
-  if($('tTour')&&$('tTour').checked)return swept(c,x,y,tz).q;
+  if(tourOn())return swept(c,x,y,tz).q;
   return qual(c,x,y,tz,c.a,c.t||0);
 }
-

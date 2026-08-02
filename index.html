@@ -3,36 +3,49 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Camera coverage planner</title>
+<title>Sightline — camera coverage planner</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root{
   --ink:#0F1319;--ink2:#161C25;--line:#232C38;--line2:#2E3947;
-  --bone:#E9E5DB;--dim:#8A9099;--warn:#E08A82;
+  --bone:#E9E5DB;--dim:#8A9099;--warn:#E08A82;--good:#93BF63;
   --sans:"Space Grotesk","Helvetica Neue",Arial,sans-serif;
   --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --sidebar:320px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
-body{background:var(--ink);color:var(--bone);font-family:var(--sans);-webkit-font-smoothing:antialiased}
-.wrap{display:grid;grid-template-columns:minmax(0,1fr) 340px;height:100vh}
+body{background:var(--ink);color:var(--bone);font-family:var(--sans);-webkit-font-smoothing:antialiased;overflow:hidden}
+
+/* three regions: sidebar | stage, with a status bar across the bottom */
+.wrap{display:grid;grid-template-columns:var(--sidebar) minmax(0,1fr);
+  grid-template-rows:minmax(0,1fr) 26px;height:100vh}
+.side{background:var(--ink2);border-right:1px solid var(--line);
+  display:grid;grid-template-rows:minmax(80px,var(--treeh,42%)) 5px minmax(0,1fr);overflow:hidden;position:relative}
+#treepane{overflow-y:auto;padding:8px 0 10px}
+#propspane{overflow-y:auto;padding:10px 12px 18px;border-top:1px solid var(--line)}
+.vgrip{cursor:row-resize;background:transparent}
+.vgrip:hover{background:var(--line2)}
+.grip{position:absolute;top:0;right:-3px;width:6px;height:100%;cursor:col-resize;z-index:9}
+.grip:hover{background:var(--line2)}
+
 .stage{position:relative;min-width:0;background:radial-gradient(ellipse at 45% 40%,#151B24 0%,var(--ink) 72%);overflow:hidden}
 .stage.split #cov,.stage.split #plan,.stage.split #view3d{width:50%}
 .stage.split #povgrid{left:50%;width:50%;padding:52px 10px 10px;border-left:1px solid var(--line)}
 #cov,#plan,#view3d,#gl3d{position:absolute;inset:0;width:100%;height:100%}
 #gl3d{z-index:3}
 .stage.split #gl3d{width:50%}
-.povcell canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
-.povcell svg{position:absolute;inset:0;z-index:2}
 #povgrid{position:absolute;inset:0;z-index:4;display:none;grid-template-columns:1fr 1fr;
   gap:8px;padding:52px 12px 12px;overflow-y:auto;align-content:start;grid-auto-rows:min-content}
 .povcell{position:relative;background:#0B0F14;border:1px solid var(--line);border-radius:3px;
   overflow:hidden;cursor:zoom-in;aspect-ratio:16/10;height:auto;align-self:start}
 .povcell.wide{aspect-ratio:32/10;grid-column:span 2}
 #povgrid.one .povcell.wide{grid-column:span 1}
-.povcell svg{width:100%;height:100%;display:block}
+/* the GL canvas renders the scene; the SVG overlays handles and labels on top */
+.povcell canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.povcell svg{position:absolute;inset:0;width:100%;height:100%;display:block;z-index:2}
 .dpad{position:absolute;right:8px;bottom:8px;display:grid;
   grid-template-columns:repeat(3,24px);grid-template-rows:repeat(3,24px);gap:2px;
   opacity:.45;transition:opacity .15s;z-index:2}
@@ -45,76 +58,140 @@ body{background:var(--ink);color:var(--bone);font-family:var(--sans);-webkit-fon
 .dpad button:focus-visible{outline:2px solid var(--bone);outline-offset:1px}
 .dpad .u{grid-area:1/2}.dpad .l{grid-area:2/1}.dpad .c{grid-area:2/2;font-size:9px}
 .dpad .r{grid-area:2/3}.dpad .d{grid-area:3/2}
-#bPlay[aria-pressed="true"]{color:#93BF63;border-color:#4E6B3A}
+#bPlay[aria-pressed="true"]{color:var(--good);border-color:#4E6B3A}
+/* view3d is the SVG handle overlay and must sit ABOVE the GL canvas (z-index 3),
+   and must be transparent or it paints over the whole render. The gradient is
+   the pre-WebGL sky, kept only as a fallback and defeated by the !important
+   above it - do not "tidy" that away without checking 3D still draws. */
 #cov{z-index:1}#plan{z-index:2}#view3d{z-index:4;background:none !important;background:linear-gradient(#3F70A4 0%,#7FAAD2 45%,#0F1319 46%,#0F1319 100%)}
 svg{display:block;touch-action:none}
-.masthead{position:absolute;top:18px;left:22px;z-index:6;pointer-events:none}
-.masthead h1{font-size:12px;font-weight:700;letter-spacing:.22em;text-transform:uppercase}
-.masthead p{font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:5px}
-.modes{position:absolute;top:16px;right:18px;z-index:6;display:flex;gap:4px}
-.modes button{background:#161C25;border:1px solid var(--line2);color:var(--dim);
+
+.modes{position:absolute;top:14px;right:16px;z-index:6;display:flex;gap:4px}
+.modes button,.layers button{background:#161C25;border:1px solid var(--line2);color:var(--dim);
   font-family:var(--mono);font-size:10px;letter-spacing:.1em;padding:6px 11px;border-radius:2px;cursor:pointer}
-.modes button[aria-pressed="true"]{color:var(--bone);border-color:#5A6678;background:#212A35}
-.hint{position:absolute;left:22px;bottom:16px;z-index:6;font-family:var(--mono);font-size:10px;
+.modes button[aria-pressed="true"],.layers button[aria-pressed="true"]{color:var(--bone);border-color:#5A6678;background:#212A35}
+.modes button:focus-visible,.layers button:focus-visible,button.act:focus-visible{outline:2px solid var(--bone);outline-offset:1px}
+.layers{position:absolute;top:14px;left:16px;z-index:6;display:flex;gap:4px;flex-wrap:wrap;max-width:58%}
+.layers button{padding:5px 8px;letter-spacing:.06em}
+.hint{position:absolute;left:16px;bottom:12px;z-index:6;font-family:var(--mono);font-size:10px;
   color:var(--dim);line-height:1.7;pointer-events:none}
-.toast{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);z-index:7;background:#212A35;
+.toast{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);z-index:7;background:#212A35;
   border:1px solid var(--line2);padding:7px 13px;border-radius:3px;font-family:var(--mono);font-size:10.5px;
   opacity:0;transition:opacity .2s;pointer-events:none}
 .toast.on{opacity:1}
-.panel{background:var(--ink2);border-left:1px solid var(--line);padding:18px 16px;overflow-y:auto}
+
+/* ---- status bar ---- */
+.status{grid-column:1/-1;background:#121820;border-top:1px solid var(--line);
+  display:flex;align-items:center;font-family:var(--mono);font-size:10px;color:var(--dim);
+  padding:0 10px;overflow-x:auto;white-space:nowrap}
+.status .cell{padding:0 11px;border-right:1px solid var(--line);line-height:25px;flex:none}
+.status .cell:last-child{border-right:none}
+.status b{color:var(--bone);font-weight:500}
+.status .warn b{color:var(--warn)}
+.status.stale b{color:var(--dim)}
+
+/* ---- tree ---- */
+.tsec{margin-bottom:2px}
+.thead{display:flex;align-items:center;gap:6px;padding:5px 10px;cursor:pointer;
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim)}
+.thead:hover{background:#1B222C;color:var(--bone)}
+.thead .cnt{color:#5A6678;letter-spacing:0}
+.tadd{margin-left:auto;background:none;border:1px solid var(--line2);color:var(--dim);
+  width:17px;height:17px;line-height:1;border-radius:2px;cursor:pointer;font-size:12px;
+  display:flex;align-items:center;justify-content:center;flex:none}
+.tadd:hover{color:var(--bone);border-color:#5A6678;background:#212A35}
+.trow{display:flex;align-items:center;gap:6px;padding:4px 10px 4px 0;cursor:pointer;font-size:12px;position:relative}
+.trow:hover{background:#1B222C}
+.trow.sel{background:#222C38}
+.trow.sel::before{content:'';position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--dot,var(--bone))}
+.trow .tw{width:12px;flex:none;color:#5A6678;font-size:9px;text-align:center}
+.trow .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trow .mt{font-family:var(--mono);font-size:9px;color:#6E7783;flex:none}
+.trow .eye{background:none;border:none;color:#5A6678;cursor:pointer;font-size:11px;padding:0 2px}
+.trow .eye:hover{color:var(--bone)}
+.trow.off .nm{color:#5F6772}
+.trow.drop{outline:1px dashed var(--bone);outline-offset:-2px}
+.trow .dot{width:6px;height:6px;border-radius:50%;flex:none}
+
+/* ---- property editor ---- */
 .eyebrow{font-family:var(--mono);font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim);margin:0 0 9px}
-.divider{height:1px;background:var(--line);margin:16px 0}
-.card{border:1px solid var(--line);border-left:3px solid var(--dot);border-radius:3px;margin-bottom:6px;overflow:hidden}
-.card.off{opacity:.4}
-.card.sel{background:#1B222C;border-color:var(--dot)}
-.head{display:flex;align-items:flex-start;gap:8px;padding:8px 10px;cursor:pointer}
-.head:hover{background:#1B222C}
-.head .b{flex:1;min-width:0}
-.head .id{font-family:var(--mono);font-size:9px;color:var(--dot);letter-spacing:.1em}
-.head .nm{font-size:12.5px;font-weight:500;margin:2px 0 3px}
-.head .mt{font-family:var(--mono);font-size:9.5px;color:var(--dim);line-height:1.55}
-.head .mt b{color:var(--warn);font-weight:500}
-.eye{background:none;border:none;color:var(--dim);cursor:pointer;font-size:13px;padding:0 2px;line-height:1}
-.eye:hover{color:var(--bone)}
-.edit{padding:0 10px 9px;display:none}
-.card.sel .edit{display:block}
+.divider{height:1px;background:var(--line);margin:14px 0}
 .fld{display:flex;align-items:center;gap:6px;margin-bottom:5px}
-.fld label{font-family:var(--mono);font-size:9.5px;color:var(--dim);width:52px;flex:none}
-input.t{flex:1;min-width:0;background:#0F1319;border:1px solid var(--line2);color:var(--bone);
+.fld label{font-family:var(--mono);font-size:9.5px;color:var(--dim);width:64px;flex:none}
+input.t,select.t{flex:1;min-width:0;background:#0F1319;border:1px solid var(--line2);color:var(--bone);
   font-family:var(--mono);font-size:10.5px;padding:5px 6px;border-radius:2px}
-input.t:focus{outline:1px solid var(--dot);border-color:var(--dot)}
-.row{display:flex;gap:5px}
+input.t:focus,select.t:focus{outline:1px solid var(--bone);border-color:var(--bone)}
+input.t.inherited{color:#6E7783;font-style:italic}
+.row{display:flex;gap:5px;margin-bottom:5px}
 button.act{background:#0F1319;border:1px solid var(--line2);color:var(--bone);font-family:var(--mono);
   font-size:10px;letter-spacing:.05em;padding:6px 8px;border-radius:2px;cursor:pointer;flex:1}
 button.act:hover{background:#212A35;border-color:#455063}
-button.act:focus-visible{outline:2px solid var(--bone);outline-offset:1px}
 button.danger:hover{border-color:#B4564F;color:var(--warn)}
-.layer{display:flex;align-items:center;gap:8px;padding:5px 0;cursor:pointer;font-size:12px}
+.layer{display:flex;align-items:center;gap:8px;padding:4px 0;cursor:pointer;font-size:12px}
 .layer input{accent-color:var(--bone);width:13px;height:13px;cursor:pointer}
-textarea{width:100%;height:80px;background:#0F1319;border:1px solid var(--line2);color:var(--bone);
-  font-family:var(--mono);font-size:9.5px;padding:6px;border-radius:2px;resize:vertical;line-height:1.5}
 .note{font-family:var(--mono);font-size:9.5px;color:var(--dim);line-height:1.6;margin-top:6px}
-.stat{font-family:var(--mono);font-size:10px;color:var(--dim);line-height:1.7}
-.stat b{color:var(--bone);font-weight:500}
-select.t{flex:1;background:#0F1319;border:1px solid var(--line2);color:var(--bone);
-  font-family:var(--mono);font-size:10.5px;padding:5px;border-radius:2px}
-.plabel{font-family:var(--mono);font-size:2.1px;fill:#6E7783;letter-spacing:.1em}
-.camlabel{font-family:var(--mono);font-size:2.5px;font-weight:500;letter-spacing:.06em}
-.gridline{stroke:#1E2732;stroke-width:.18}
-@media (max-width:840px){.wrap{grid-template-columns:1fr;grid-template-rows:54vh auto;height:auto}
-  .panel{border-left:none;border-top:1px solid var(--line)}.hint{display:none}}
+.note b{color:var(--bone);font-weight:500}
+.spec{font-family:var(--mono);font-size:9.5px;color:var(--dim);line-height:1.75}
+.spec b{color:var(--bone);font-weight:500}
+.badge{font-family:var(--mono);font-size:8.5px;padding:1px 4px;border:1px solid var(--line2);
+  border-radius:2px;color:var(--dim);margin-left:5px}
+textarea{width:100%;height:70px;background:#0F1319;border:1px solid var(--line2);color:var(--bone);
+  font-family:var(--mono);font-size:9.5px;padding:6px;border-radius:2px;resize:vertical;line-height:1.5}
+a.link{color:#7FAAD2;font-family:var(--mono);font-size:9.5px;text-decoration:none}
+a.link:hover{text-decoration:underline}
+
+/* ---- add menu ---- */
+.scrim{position:fixed;inset:0;background:rgba(9,12,16,.66);z-index:20;display:flex;
+  align-items:center;justify-content:center}
+.picker{background:var(--ink2);border:1px solid var(--line2);border-radius:4px;width:min(760px,92vw);
+  max-height:82vh;display:flex;flex-direction:column;overflow:hidden}
+.picker h3{font-size:12px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;
+  padding:13px 15px;border-bottom:1px solid var(--line)}
+.pbar{display:flex;gap:6px;padding:10px 15px;border-bottom:1px solid var(--line);flex-wrap:wrap;align-items:center}
+.pbar input.t{flex:1 1 200px}
+.chip{font-family:var(--mono);font-size:9.5px;padding:4px 8px;border:1px solid var(--line2);
+  border-radius:11px;color:var(--dim);cursor:pointer;background:none}
+.chip[aria-pressed="true"]{color:var(--bone);border-color:#5A6678;background:#212A35}
+.plist{overflow-y:auto;padding:6px 0}
+.pitem{display:flex;align-items:center;gap:10px;padding:9px 15px;cursor:pointer;border-bottom:1px solid #1A212A}
+.pitem:hover{background:#1B222C}
+.pitem .b{flex:1;min-width:0}
+.pitem .t1{font-size:12.5px;font-weight:500}
+.pitem .t2{font-family:var(--mono);font-size:9.5px;color:var(--dim);margin-top:3px;line-height:1.5}
+.pitem .incompat{color:var(--warn)}
+.pempty{padding:26px 15px;font-family:var(--mono);font-size:10.5px;color:var(--dim);line-height:1.9;text-align:center}
+.pfoot{padding:10px 15px;border-top:1px solid var(--line);display:flex;gap:6px;justify-content:flex-end}
+.pfoot button.act{flex:0 0 auto;padding:6px 14px}
+.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;padding:14px}
+.pcard{border:1px solid var(--line2);border-radius:3px;padding:12px 10px;cursor:pointer;text-align:center}
+.pcard:hover{background:#212A35;border-color:#5A6678}
+.pcard .t1{font-size:12px;margin-bottom:4px}
+.pcard .t2{font-family:var(--mono);font-size:9px;color:var(--dim)}
+
+@media (max-width:840px){
+  .wrap{grid-template-columns:1fr;grid-template-rows:38vh minmax(0,1fr) 26px}
+  .side{border-right:none;border-bottom:1px solid var(--line)}
+  .grip{display:none}.hint{display:none}
+}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 </head>
 <body>
 <div class="wrap">
+  <aside class="side" id="side">
+    <div id="treepane"></div>
+    <div class="vgrip" id="vgrip"></div>
+    <div id="propspane"></div>
+    <div class="grip" id="grip"></div>
+  </aside>
+
   <div class="stage" id="stage">
     <canvas id="cov"></canvas>
-    <svg id="plan" preserveAspectRatio="xMidYMid meet"></svg>
     <canvas id="gl3d" style="display:none"></canvas>
+    <svg id="plan" preserveAspectRatio="xMidYMid meet"></svg>
     <svg id="view3d" preserveAspectRatio="xMidYMid meet" style="display:none"></svg>
     <div id="povgrid"></div>
-    <div class="masthead"><h1>Coverage planner</h1><p id="sub">3D occlusion · target height 3 ft</p></div>
+    <div class="layers" id="layers"></div>
     <div class="modes">
       <button id="m2d" aria-pressed="true">PLAN</button>
       <button id="m3d" aria-pressed="false">3D</button>
@@ -127,74 +204,7 @@ select.t{flex:1;background:#0F1319;border:1px solid var(--line2);color:var(--bon
     <div class="toast" id="toast"></div>
   </div>
 
-  <aside class="panel">
-    <div class="eyebrow">Coverage <span id="stats" style="float:right;text-transform:none;letter-spacing:0"></span></div>
-    <p class="stat" id="statline"></p>
-
-    <div class="divider"></div>
-    <div class="eyebrow">Cameras</div>
-    <div id="camlist"></div>
-    <div class="row" style="margin-top:6px">
-      <button class="act" id="bAddCam">+ Camera</button>
-      <button class="act" id="bAddBox">+ Occluder</button>
-    </div>
-
-    <div class="divider"></div>
-    <div class="eyebrow">Occluders</div>
-    <div id="boxlist"></div>
-
-    <div class="divider"></div>
-    <div class="eyebrow">Settings</div>
-    <div class="fld"><label>target</label>
-      <select class="t" id="tz">
-        <option value="0">ground 0 ft</option>
-        <option value="3" selected>torso 3 ft</option>
-        <option value="5.5">head 5.5 ft</option>
-      </select></div>
-    <div class="fld"><label>draw</label>
-      <select class="t" id="rmode">
-        <option value="cones" selected>cones (vector)</option>
-        <option value="heat">heatmap (pixels)</option>
-      </select></div>
-    <div class="fld"><label>fence ft</label>
-      <input class="t" id="fh" type="number" step="0.5" value="8"></div>
-    <label class="layer"><input type="checkbox" id="tFence" checked> Perimeter fence blocks</label>
-    <label class="layer"><input type="checkbox" id="tOcc" checked> Occlusion on</label>
-    <label class="layer"><input type="checkbox" id="tId" checked> Shade face-ID range</label>
-    <label class="layer"><input type="checkbox" id="tTour"> Count PT circuit coverage</label>
-    <label class="layer"><input type="checkbox" id="tFrus" checked> Frustum solids (3D)</label>
-    <label class="layer"><input type="checkbox" id="tSplat"> Splatter surfaces (3D)</label>
-    <label class="layer"><input type="checkbox" id="tGrid" checked> 5 ft grid</label>
-
-    <div class="divider"></div>
-    <div class="eyebrow">Presets</div>
-    <div class="row" style="margin-bottom:5px">
-      <button class="act" data-preset="measured">House (measured)</button>
-    </div>
-    <div class="row" style="margin-bottom:5px">
-      <button class="act" data-preset="yours">Your 7 PTZ</button>
-      <button class="act" data-preset="duo2">2 Duo + 4 E1</button>
-    </div>
-    <div class="row"><button class="act" data-preset="duo4">4 Duo mid-wall</button>
-      <button class="act" id="bReset">Reset all</button></div>
-    <div class="row" style="margin-top:5px"><button class="act" id="bFit">Fit view</button></div>
-
-    <div class="divider"></div>
-    <div class="eyebrow">Layout code</div>
-    <textarea id="code" spellcheck="false"></textarea>
-    <div class="row" style="margin-top:5px">
-      <button class="act" id="bCopy">Copy</button>
-      <button class="act" id="bLoad">Load</button>
-    </div>
-    <p class="note">Plain text — paste into chat to share the exact geometry.</p>
-    <div class="divider"></div>
-    <div class="eyebrow">Shortcuts</div>
-    <p class="note">2 / 3 / 4 / 5 &nbsp;plan · 3D · cams · split<br>Space &nbsp;play PT circuit<br>
-      F &nbsp;fit view &nbsp;·&nbsp; G &nbsp;grid<br>
-      B &nbsp;restore measured boundary<br>
-      E &nbsp;edit boundary &nbsp;·&nbsp; Esc &nbsp;deselect<br>
-      S &nbsp;splatter &nbsp;·&nbsp; V &nbsp;frustums<br>O &nbsp;occlusion on/off</p>
-  </aside>
+  <div class="status" id="status"></div>
 </div>
 
 <script>
@@ -469,22 +479,15 @@ const hex=h=>[parseInt(h.slice(1,3),16)/255,
               parseInt(h.slice(5,7),16)/255];
 
 /* ---------- ray intersection against the scene ---------- */
-// Mirrors the occlusion model: axis-aligned solids with bilinear top and
-// base surfaces, plus the vertical fence panels on the property boundary.
+// The AO bake used to carry its own copy of the occlusion maths, and the
+// developer guide warned that the copy and blocked() had to be changed in
+// lockstep or they would diverge silently. They no longer diverge: both call
+// hitsOccluder() in shapes.js. What stays separate is the loop policy - this
+// one skips the layer toggles because it runs in the bake's hot loop, and it
+// takes an unbounded ray with a maxT rather than a 0..1 segment.
 function makeCaster(env){
-  const {boxes,prop,fence,baseAt,topAt,flatT,flatB}=env;
+  const {boxes,prop,fence}=env;
   const solids=boxes.filter(b=>b.on);
-
-  function xySpan(ox,oy,dx,dy,b){
-    let t0=0,t1=Infinity;
-    for(const[o,d,lo,hi]of [[ox,dx,b.x0,b.x1],[oy,dy,b.y0,b.y1]]){
-      if(Math.abs(d)<1e-9){ if(o<lo||o>hi)return null; continue; }
-      let a=(lo-o)/d, z=(hi-o)/d; if(a>z){const s=a;a=z;z=s;}
-      if(a>t0)t0=a; if(z<t1)t1=z;
-      if(t0>t1)return null;
-    }
-    return [t0,t1];
-  }
 
   // does anything block the segment from origin out to maxT?
   return function occluded(ox,oy,oz,dx,dy,dz,maxT,ignore){
@@ -492,27 +495,11 @@ function makeCaster(env){
       const t=-oz/dz;
       if(t>1e-3&&t<maxT)return true;              // the ground itself
     }
+    // scale the direction so the shared test's 0..1 segment spans 0..maxT
+    const sx=dx*maxT, sy=dy*maxT, sz=dz*maxT;
     for(const b of solids){
       if(b===ignore)continue;
-      const r=xySpan(ox,oy,dx,dy,b);
-      if(!r)continue;
-      const lo=Math.max(r[0],1e-3), hi=Math.min(r[1],maxT);
-      if(lo>=hi)continue;
-      if(flatT(b)&&flatB(b)){
-        const z0=b.zb[0],z1=b.zt[0];
-        let a=lo,z=hi;
-        if(Math.abs(dz)<1e-9){ if(oz<z0||oz>z1)continue; return true; }
-        let ta=(z0-oz)/dz, tb=(z1-oz)/dz;
-        if(ta>tb){const s=ta;ta=tb;tb=s;}
-        if(Math.max(a,ta)<=Math.min(z,tb))return true;
-      } else {
-        const N=14;
-        for(let i=0;i<=N;i++){
-          const t=lo+(hi-lo)*i/N;
-          const x=ox+dx*t,y=oy+dy*t,z=oz+dz*t;
-          if(z>=baseAt(b,x,y)&&z<=topAt(b,x,y))return true;
-        }
-      }
+      if(hitsOccluder(b,ox,oy,oz,sx,sy,sz))return true;
     }
     if(fence.on&&fence.h>0){
       for(let i=0;i<prop.length;i++){
@@ -627,11 +614,61 @@ function build(env){
     return (c[0]*n[0]+c[1]*n[1]+c[2]*n[2])>=0?P:[P[0],P[3],P[2],P[1]];
   };
 
+  // A cylinder as a tessellated tube with a cap, plus an ellipsoid canopy for
+  // the tree preset. Tessellated for the same reason every other surface is:
+  // AO is a vertex attribute and a two-triangle wall carries no gradient.
+  function tube(b,c,w){
+    const cx=(b.x0+b.x1)/2, cy=(b.y0+b.y1)/2;
+    const z0=zmin(b), z1=zmax(b), r=b.r||0.5;
+    const SEG=12, RINGS=Math.max(2,Math.min(8,Math.round((z1-z0)/2.2)));
+    const at=(i,k)=>{
+      const a=2*Math.PI*i/SEG;
+      return w([cx+Math.cos(a)*r, cy+Math.sin(a)*r, z0+(z1-z0)*k/RINGS]);
+    };
+    for(let i=0;i<SEG;i++)for(let k=0;k<RINGS;k++){
+      const P=[at(i,k),at(i+1,k),at(i+1,k+1),at(i,k+1)];
+      const a=2*Math.PI*(i+0.5)/SEG;
+      let n=[Math.cos(a),Math.sin(a),0];
+      n=env.xformDir(env.worldM(b),n);
+      quad(wound(P,n),n,c,b,2.2);
+    }
+    // cap
+    const top=[at(0,RINGS),at(Math.floor(SEG/4),RINGS),at(Math.floor(SEG/2),RINGS),at(Math.floor(3*SEG/4),RINGS)];
+    quad(wound(top,[0,0,1]),[0,0,1],c,b,2.2);
+
+    if(b.shape!=='tree')return;
+    const rad=b.canopyR||Math.max(r*3,3), h=b.canopyH||rad*1.3;
+    const ccz=z1+h*0.35;
+    const leaf=hex(MAT.grassLit||'#5E8C48');
+    const LAT=6, LON=10;
+    const pt=(u,v)=>{
+      const th=Math.PI*u/LAT, ph=2*Math.PI*v/LON;
+      return w([cx+rad*Math.sin(th)*Math.cos(ph), cy+rad*Math.sin(th)*Math.sin(ph), ccz+h*Math.cos(th)]);
+    };
+    for(let u=0;u<LAT;u++)for(let v=0;v<LON;v++){
+      const P=[pt(u,v),pt(u+1,v),pt(u+1,v+1),pt(u,v+1)];
+      const mid=pt(u+0.5,v+0.5);
+      let n=[mid[0]-cx,mid[1]-cy,mid[2]-ccz];
+      const l=Math.hypot(...n)||1; n=n.map(q=>q/l);
+      quad(wound(P,n),n,leaf,b,2.2);
+    }
+  }
+
   /* structures */
+  // Corners come out of TC/BC in the occluder's own frame; worldM carries them
+  // up through any parent chain. With no yaw and no parent this is the
+  // identity, so an untransformed scene emits exactly the vertices it always
+  // did.
+  const W=b=>{
+    const m=env.worldM(b);
+    return p=>env.xformPt(m,p);
+  };
   boxes.forEach(b=>{
     if(!b.on)return;
     const c=hex(matOf(b));
-    const T=TC(b), B=BC(b);
+    const w=W(b);
+    if(b.shape==='cyl'||b.shape==='tree'){ tube(b,c,w); return; }
+    const T=TC(b).map(w), B=BC(b).map(w);
     const faces=[
       [T[0],T[1],T[2],T[3]],                                        // top
       [B[0],B[1],B[2],B[3]],                                        // base
@@ -695,11 +732,16 @@ const txt=(at,s)=>{const e=el('text',at);e.textContent=s;return e;};
 // the recorded image simply is not rectilinear. Modelling it as linear in
 // bearing and tangent in elevation, stretched to the sensor, is closer to what
 // they actually produce than pretending it is a pinhole.
-const LENS={
-  ptz:{f:88 ,vf:41.5,r:40,sensor:3840/2160,label:'E1 SE PTZ 88°'},
-  duo:{f:189,vf:55  ,r:65,sensor:7680/2160,label:'Duo 3/3V 189°'}
+// The render paths (POV, cones, frusta, 3D) ask a camera for its lens in the
+// shape they have always used. That shape is now derived from the camera's
+// catalog spec rather than looked up in a table of two: `r` in particular is
+// no longer a constant but the DORI recognise distance for this sensor and
+// field of view, clamped by what the camera can light at night.
+const lensOf=c=>{
+  const S=specOf(c);
+  return {f:S.fovH, vf:S.fovV, r:detectFt(S), sensor:S.resW/S.resH,
+          label:`${S.brand} ${S.model}`};
 };
-const lensOf=c=>LENS[c.lens||'ptz'];
 const PAL=['#E8A33D','#4FB3C4','#C97FA0','#93BF63','#B49BE0','#E0785C','#63BFA6','#D9C25E'];
 
 /* ---------------- state ---------------- */
@@ -796,6 +838,59 @@ function fenceDist(ox,oy,oz,dx,dy,dz,max){
 }
 let GLON=true;
 let cams=DEF_CAMS(), boxes=DEF_BOXES(), sel=null, selBox=null, mode='2d', splat=null, frusta=null, povMax=null;
+let nvrs=[], selNvr=null;
+
+/* ---------------- scene options ---------------- */
+// These used to be checkboxes in the right panel. The panel is gone; the
+// options are scene state, saved with the project, and reached through
+// accessors so no render path has to know where they live.
+let opts={
+  tz:3,            // target height, feet
+  draw:'cones',    // 'cones' | 'heat'
+  occ:true, id:true, tour:false, frus:true, splat:false, grid:true,
+  night:false,     // limits camera range to IR / floodlight distance
+  fps:15, quality:'med'   // project-level recording defaults
+};
+const occOn=()=>opts.occ, tourOn=()=>opts.tour, idOn=()=>opts.id,
+      gridOn=()=>opts.grid, frusOn=()=>opts.frus, splatOn=()=>opts.splat,
+      targetZ=()=>opts.tz, drawMode=()=>opts.draw, night=()=>opts.night;
+
+// Bumped once per render. Transform matrices cache against it, so they can be
+// stale for at most a frame and never need manual invalidation on edit.
+let sceneGen=0;
+
+/* ---------------- occluder shapes ---------------- */
+// Presets seed a shape; they are not separate entity types. 'cyl' and 'tree'
+// carry a radius, everything else is the box that has always been here.
+const OCC_PRESETS={
+  building:{name:'Building', shape:'box', w:20,d:16, base:0, top:18},
+  roof    :{name:'Sloped roof', shape:'box', w:12,d:8, base:8, top:11, slope:2.5},
+  post    :{name:'Column / post', shape:'cyl', w:1, d:1, base:0, top:9, r:0.5},
+  fence   :{name:'Fence run', shape:'box', w:20,d:0.5, base:0, top:6},
+  tree    :{name:'Tree', shape:'tree', w:2,d:2, base:0, top:10, r:0.7, canopyR:7, canopyH:8}
+};
+function makeOccluder(kind,at){
+  const P=OCC_PRESETS[kind]||OCC_PRESETS.building;
+  let n=1; while(boxes.some(b=>b.id==='B'+n))n++;
+  const x0=at?at.x:-14, y0=at?at.y:-10;
+  const b={id:'B'+n, name:P.name, shape:P.shape,
+    x0, y0, x1:x0+P.w, y1:y0+P.d,
+    zb:[P.base,P.base,P.base,P.base],
+    zt:[P.top,P.top,P.top,P.top],
+    yaw:0, parent:null, on:true};
+  if(P.slope){ b.zb=[P.base,P.base+P.slope,P.base+P.slope,P.base];
+               b.zt=[P.top,P.top+P.slope,P.top+P.slope,P.top]; }
+  if(P.r){ b.r=P.r; }
+  if(P.canopyR){ b.canopyR=P.canopyR; b.canopyH=P.canopyH; }
+  return b;
+}
+// children first is what the tree renders; the flat list stays authoritative
+const childrenOf=id=>boxes.filter(b=>(b.parent||null)===id);
+function setParent(b,pid){
+  if(pid && (pid===b.id || wouldCycle(b,pid)))return false;
+  b.parent=pid||null;
+  return true;
+}
 function polyArea(){
   let a=0;
   for(let i=0,j=prop.length-1;i<prop.length;j=i++)
@@ -822,10 +917,155 @@ function loadMeasured(){
   if(C.length)cams=C;
   if(B.length)boxes=B;
   prop=P?P:DEF_PROP();
+  migrateScene();
+  // One recorder, holding every camera. Without it the tree has cameras with
+  // no parent and the status bar has no storage to report against.
+  nvrs=[{id:'N1',name:'Main recorder',catKey:'reolink-rln8-410',on:true,
+    spec:{id:'reolink-rln8-410',brand:'Reolink',model:'RLN8-410',channels:8,
+      storageGB:2000,maxStorageGB:12000,poePorts:8,compat:['reolink'],checked:'2026-08-02'}}];
+  cams.forEach(c=>{ if(!c.nvr)c.nvr='N1'; });
+  CAT.seedFromProject(projectSnapshot());
 }
 const colC=c=>PAL[cams.indexOf(c)%PAL.length];
 
-/* ---------------- 3D occlusion ---------------- */
+/* ---------------- legacy migration ---------------- */
+// Scenes written before the catalog existed carry lens:'ptz'|'duo'. Each maps
+// to a real catalog entry, and a copy of that entry is embedded on the camera
+// so the scene still resolves with no catalog present at all.
+const LEGACY_KEY={ptz:'reolink-e1-outdoor-se', duo:'reolink-duo-3v-poe'};
+const LEGACY_SPEC={
+  'reolink-e1-outdoor-se':{id:'reolink-e1-outdoor-se',brand:'Reolink',model:'E1 Outdoor SE',
+    resolution:{w:3840,h:2160},fovH:88,fovV:41.5,ptz:true,irFt:98,poe:false,wifi:true,
+    formats:['H.265','H.264'],compat:['reolink'],checked:'2026-08-02'},
+  'reolink-duo-3v-poe':{id:'reolink-duo-3v-poe',brand:'Reolink',model:'Duo 3V PoE',
+    resolution:{w:7680,h:2160},fovH:189,fovV:55,ptz:false,irFt:100,poe:true,wifi:false,
+    formats:['H.265','H.264'],compat:['reolink'],checked:'2026-08-02'}
+};
+function migrateCam(c){
+  if(!c.catKey){
+    c.catKey=LEGACY_KEY[c.lens||'ptz']||LEGACY_KEY.ptz;
+    c.spec=LEGACY_SPEC[c.catKey];
+  }
+  if(c.yaw===undefined)c.yaw=0;
+  delete c._spec;
+  return c;
+}
+function migrateBox(b){
+  if(b.shape===undefined)b.shape='box';
+  if(b.yaw===undefined)b.yaw=0;
+  if(b.parent===undefined)b.parent=null;
+  return b;
+}
+const migrateScene=()=>{ cams.forEach(migrateCam); boxes.forEach(migrateBox); };
+
+/* ---------------- transforms and shape intersection ---------------- */
+/*
+   The single source of truth for "does this segment hit this occluder".
+   blocked() and MESH.makeCaster both call hitsOccluder(); only their loop
+   policy differs (the caster skips the layer-toggle lookups because it runs
+   in the AO bake's hot loop).
+
+   The developer guide used to warn that those two mirrored each other by hand
+   and had to be changed in lockstep. They no longer mirror: the primitives
+   live here once. Keep it that way - a second copy of a shape test is the
+   failure mode that hides for months.
+
+   Transforms are rigid: yaw about z, plus translation. The pipeline is a
+   general 4x4 so pitch and roll are a UI change later rather than an
+   architecture change, but only yaw is ever constructed today.
+*/
+
+const TX = (() => {
+
+const ident = () => [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
+
+// column-major, same convention as GL.M4
+function mul(a,b){
+  const o=new Array(16);
+  for(let c=0;c<4;c++)for(let r=0;r<4;r++){
+    o[c*4+r]=a[r]*b[c*4]+a[4+r]*b[c*4+1]+a[8+r]*b[c*4+2]+a[12+r]*b[c*4+3];
+  }
+  return o;
+}
+function rotZ(deg){
+  const a=deg*Math.PI/180, c=Math.cos(a), s=Math.sin(a);
+  return [c,s,0,0, -s,c,0,0, 0,0,1,0, 0,0,0,1];
+}
+const trans=(x,y,z)=>[1,0,0,0, 0,1,0,0, 0,0,1,0, x,y,z,1];
+
+// Rigid inverse: transpose the rotation, negate the rotated translation.
+// Cheaper and better conditioned than a general inverse, and valid because
+// nothing here ever scales or shears.
+function invRigid(m){
+  const o=[m[0],m[4],m[8],0, m[1],m[5],m[9],0, m[2],m[6],m[10],0, 0,0,0,1];
+  const x=m[12],y=m[13],z=m[14];
+  o[12]=-(o[0]*x+o[4]*y+o[8]*z);
+  o[13]=-(o[1]*x+o[5]*y+o[9]*z);
+  o[14]=-(o[2]*x+o[6]*y+o[10]*z);
+  return o;
+}
+const xformPt=(m,p)=>[
+  m[0]*p[0]+m[4]*p[1]+m[8]*p[2]+m[12],
+  m[1]*p[0]+m[5]*p[1]+m[9]*p[2]+m[13],
+  m[2]*p[0]+m[6]*p[1]+m[10]*p[2]+m[14]];
+// direction: translation-free, so segment parameters survive the transform
+const xformDir=(m,p)=>[
+  m[0]*p[0]+m[4]*p[1]+m[8]*p[2],
+  m[1]*p[0]+m[5]*p[1]+m[9]*p[2],
+  m[2]*p[0]+m[6]*p[1]+m[10]*p[2]];
+
+return {ident,mul,rotZ,trans,invRigid,xformPt,xformDir};
+})();
+
+/* ---------- parent chains ---------- */
+
+// A box's own frame: yaw about its footprint centre, so rotating never
+// teleports it. With yaw 0 and no parent this is the identity, which is why
+// every pre-transform scene still reads as world coordinates.
+function localM(b){
+  if(!b.yaw && !b.parent) return TX.ident();
+  const cx=(b.x0+b.x1)/2, cy=(b.y0+b.y1)/2;
+  return TX.mul(TX.trans(cx,cy,0), TX.mul(TX.rotZ(b.yaw||0), TX.trans(-cx,-cy,0)));
+}
+const boxById=id=>boxes.find(b=>b.id===id);
+
+// Walks to the root, stopping if the chain ever revisits a node. A cycle
+// should be impossible - setParent rejects them - but a corrupt imported
+// project must not hang the render loop.
+function chain(b){
+  const out=[]; const seen=new Set();
+  let cur=b;
+  while(cur && !seen.has(cur.id)){ seen.add(cur.id); out.push(cur); cur=cur.parent?boxById(cur.parent):null; }
+  return out;
+}
+let _mCache=new Map(), _mGen=-1;
+function worldM(b){
+  if(_mGen!==sceneGen){ _mCache=new Map(); _mGen=sceneGen; }
+  const hit=_mCache.get(b.id);
+  if(hit)return hit;
+  let m=TX.ident();
+  // root-most first, so the child's own frame is applied last
+  chain(b).reverse().forEach(n=>{ m=TX.mul(m, localM(n)); });
+  _mCache.set(b.id,m);
+  return m;
+}
+const isIdentityM=b=>!b.yaw && !b.parent;
+
+// True when assigning `parentId` to `b` would create a cycle.
+function wouldCycle(b,parentId){
+  let cur=parentId?boxById(parentId):null;
+  const seen=new Set();
+  while(cur){
+    if(cur.id===b.id)return true;
+    if(seen.has(cur.id))return true;
+    seen.add(cur.id);
+    cur=cur.parent?boxById(cur.parent):null;
+  }
+  return false;
+}
+
+/* ---------- primitives, all in the occluder's local frame ---------- */
+
 // slab test: does segment o->o+d hit the axis-aligned box?
 function segHitsBox(ox,oy,oz,dx,dy,dz,b){
   let t0=0,t1=1;
@@ -850,49 +1090,327 @@ function xyRange(ox,oy,dx,dy,b){
   }
   return [t0,t1];
 }
-function hitsWarped(c,dx,dy,dz,b){
-  const r=xyRange(c.x,c.y,dx,dy,b); if(!r)return false;
+// sampled test against a bilinear top/base, for warped slabs
+function segHitsWarped(ox,oy,oz,dx,dy,dz,b){
+  const r=xyRange(ox,oy,dx,dy,b); if(!r)return false;
   const N=22;
   for(let i=0;i<=N;i++){
     const t=r[0]+(r[1]-r[0])*i/N;
     if(t<=1e-4||t>=1-1e-4)continue;
-    const px=c.x+dx*t, py=c.y+dy*t, pz=c.z+dz*t;
+    const px=ox+dx*t, py=oy+dy*t, pz=oz+dz*t;
     if(pz>=baseAt(b,px,py) && pz<=topAt(b,px,py))return true;
   }
   return false;
 }
+// finite cylinder, axis along z from b.z0 to b.z1, radius b.r, centred on
+// the footprint centre in local xy
+function segHitsCyl(ox,oy,oz,dx,dy,dz,b){
+  const cx=(b.x0+b.x1)/2, cy=(b.y0+b.y1)/2;
+  const px=ox-cx, py=oy-cy;
+  const a=dx*dx+dy*dy;
+  const r=b.r;
+  let t0=0,t1=1;
+  if(a<1e-12){
+    // parallel to the axis: inside the disc or nothing
+    if(px*px+py*py>r*r)return false;
+  } else {
+    const bq=2*(px*dx+py*dy), cq=px*px+py*py-r*r;
+    const disc=bq*bq-4*a*cq;
+    if(disc<0)return false;
+    const sq=Math.sqrt(disc);
+    let lo=(-bq-sq)/(2*a), hi=(-bq+sq)/(2*a);
+    if(lo>hi){const s=lo;lo=hi;hi=s;}
+    if(lo>t0)t0=lo; if(hi<t1)t1=hi;
+    if(t0>t1)return false;
+  }
+  // clip against the end caps
+  if(Math.abs(dz)<1e-9){
+    if(oz<b.z0||oz>b.z1)return false;
+  } else {
+    let lo=(b.z0-oz)/dz, hi=(b.z1-oz)/dz;
+    if(lo>hi){const s=lo;lo=hi;hi=s;}
+    if(lo>t0)t0=lo; if(hi<t1)t1=hi;
+    if(t0>t1)return false;
+  }
+  return t1>1e-4 && t0<1-1e-4;
+}
+// axis-aligned ellipsoid: scale the ray into unit-sphere space and solve
+function segHitsEllipsoid(ox,oy,oz,dx,dy,dz,e){
+  const px=(ox-e.cx)/e.rx, py=(oy-e.cy)/e.ry, pz=(oz-e.cz)/e.rz;
+  const qx=dx/e.rx, qy=dy/e.ry, qz=dz/e.rz;
+  const a=qx*qx+qy*qy+qz*qz;
+  if(a<1e-12)return px*px+py*py+pz*pz<=1;
+  const b=2*(px*qx+py*qy+pz*qz), c=px*px+py*py+pz*pz-1;
+  const disc=b*b-4*a*c;
+  if(disc<0)return false;
+  const sq=Math.sqrt(disc);
+  const t0=(-b-sq)/(2*a), t1=(-b+sq)/(2*a);
+  return t1>1e-4 && t0<1-1e-4;
+}
+
+/* ---------- the shared entry point ---------- */
+
+// Canopy of a tree preset: an ellipsoid sitting on top of the trunk.
+function canopyOf(b){
+  if(b.shape!=='tree')return null;
+  const cx=(b.x0+b.x1)/2, cy=(b.y0+b.y1)/2;
+  const top=Math.max(...b.zt);
+  const rad=b.canopyR||Math.max(b.r*3,3);
+  const h=b.canopyH||rad*1.3;
+  return {cx,cy,cz:top+h*0.35,rx:rad,ry:rad,rz:h};
+}
+
+// Is the point inside this occluder's own volume? Used to let a camera
+// mounted under a roof see out of it.
+function insideOccluder(b,x,y,z){
+  const p=isIdentityM(b)?[x,y,z]:TX.xformPt(TX.invRigid(worldM(b)),[x,y,z]);
+  const [lx,ly,lz]=p;
+  if(b.shape==='cyl'||b.shape==='tree'){
+    const cx=(b.x0+b.x1)/2, cy=(b.y0+b.y1)/2;
+    const dx=lx-cx, dy=ly-cy;
+    if(dx*dx+dy*dy<=b.r*b.r*1.05 && lz>=zmin(b)-0.02 && lz<=zmax(b)+0.02)return true;
+    const e=canopyOf(b);
+    if(e){
+      const ex=(lx-e.cx)/e.rx, ey=(ly-e.cy)/e.ry, ez=(lz-e.cz)/e.rz;
+      if(ex*ex+ey*ey+ez*ez<=1.05)return true;
+    }
+    return false;
+  }
+  return lx>b.x0-.02&&lx<b.x1+.02&&ly>b.y0-.02&&ly<b.y1+.02&&
+         lz>baseAt(b,lx,ly)-.02&&lz<topAt(b,lx,ly)+.02;
+}
+
+// The one intersection routine. Segment is given in WORLD space; it is
+// transformed into the occluder's local frame and tested there, so the slab
+// and bilinear code below is exactly the code that shipped before transforms
+// existed.
+function hitsOccluder(b,ox,oy,oz,dx,dy,dz){
+  let lo=ox,lo2=oy,lo3=oz, ld=dx,ld2=dy,ld3=dz;
+  if(!isIdentityM(b)){
+    const inv=TX.invRigid(worldM(b));
+    const p=TX.xformPt(inv,[ox,oy,oz]);
+    const d=TX.xformDir(inv,[dx,dy,dz]);
+    lo=p[0];lo2=p[1];lo3=p[2]; ld=d[0];ld2=d[1];ld3=d[2];
+  }
+  if(b.shape==='cyl'||b.shape==='tree'){
+    if(segHitsCyl(lo,lo2,lo3,ld,ld2,ld3,{x0:b.x0,x1:b.x1,y0:b.y0,y1:b.y1,r:b.r,z0:zmin(b),z1:zmax(b)}))return true;
+    const e=canopyOf(b);
+    return e?segHitsEllipsoid(lo,lo2,lo3,ld,ld2,ld3,e):false;
+  }
+  if(isFlat(b))
+    return segHitsBox(lo,lo2,lo3,ld,ld2,ld3,
+      {x0:b.x0,y0:b.y0,x1:b.x1,y1:b.y1,z0:b.zb[0],z1:b.zt[0]});
+  return segHitsWarped(lo,lo2,lo3,ld,ld2,ld3,b);
+}
+/* ---------------- equipment catalog ---------------- */
+/*
+   Three sources, merged by id:
+
+     1. the copy embedded in the project   - always present, always usable
+     2. ./catalog/*.json                   - enrichment, fetched at runtime
+     3. a file the user imported           - persisted in localStorage
+
+   The fetch failing is an expected state, not an error. It always fails on
+   file://, which is why a project carries its own copy: a saved scene is
+   self-describing wherever it is opened.
+
+   Where an id collides and any stat differs, BOTH entries are kept as
+   variants tagged by source. Nothing is overwritten, so reopening an old plan
+   never silently moves its coverage numbers or its cost. Byte-identical
+   duplicates collapse.
+*/
+
+const CAT = (() => {
+
+const store = { nvrs: [], cameras: [] };
+let listeners = [];
+
+// Identity for dedup: everything except bookkeeping. Two entries that differ
+// in any spec are different equipment as far as this app is concerned.
+//
+// Key order must not matter, so this canonicalises recursively. The obvious
+// JSON.stringify(e, keys) shortcut is wrong twice over: the replacer array
+// applies to NESTED objects as well, so {resolution:{w,h}} silently loses w
+// and h, and `key` has to be excluded or a stored entry never matches the
+// incoming copy of itself.
+const canon = v => Array.isArray(v) ? v.map(canon)
+  : (v && typeof v === 'object')
+    ? Object.keys(v).sort().reduce((o,k)=>{o[k]=canon(v[k]);return o;},{})
+    : v;
+const fingerprint = e => { const {source,key,...rest}=e; return JSON.stringify(canon(rest)); };
+
+function add(kind, entries, source){
+  if(!Array.isArray(entries))return;
+  for(const raw of entries){
+    if(!raw || !raw.id)continue;
+    const e = {...raw, source};
+    const fp = fingerprint(e);
+    const list = store[kind];
+    // identical entry already present (same id, same stats) - collapse
+    if(list.some(x => x.id===e.id && fingerprint(x) === fp))continue;
+    // same id, different stats - keep both, disambiguated by source
+    const clash = list.filter(x => x.id===e.id);
+    e.key = clash.length ? `${e.id}@${source}` : e.id;
+    if(list.some(x=>x.key===e.key))continue;
+    list.push(e);
+  }
+}
+
+const all = kind => store[kind];
+const byKey = (kind,key) => store[kind].find(e=>e.key===key||e.id===key);
+const onChange = fn => { listeners.push(fn); };
+const fire = () => listeners.forEach(fn=>fn());
+
+function seedFromProject(snap){
+  if(!snap)return;
+  add('nvrs', snap.nvrs, 'project');
+  add('cameras', snap.cameras, 'project');
+  fire();
+}
+function addImported(doc){
+  add('nvrs', doc.nvrs, 'imported');
+  add('cameras', doc.cameras, 'imported');
+  fire();
+}
+// Enrichment. Never surfaces an error: on file:// this always rejects.
+async function fetchCatalog(){
+  for(const [kind,file] of [['nvrs','nvrs.json'],['cameras','cameras.json']]){
+    try{
+      const r = await fetch('./catalog/'+file, {cache:'no-cache'});
+      if(!r.ok)continue;
+      const doc = await r.json();
+      add(kind, doc[kind], 'catalog');
+    }catch(e){ /* expected on file:// - the project's own copy stands in */ }
+  }
+  fire();
+}
+const isEmpty = () => !store.nvrs.length && !store.cameras.length;
+
+return {all,byKey,add,seedFromProject,addImported,fetchCatalog,onChange,isEmpty};
+})();
+
+/* ---------------- pixel density and DORI ---------------- */
+/*
+   Range is derived, not typed in.
+
+   The textbook density formula assumes a rectilinear lens:
+
+       pxPerM(d) = resW / (2 * d * tan(h/2))
+
+   That is WRONG for the cameras this app exists to model, and not marginally:
+   at the Duo's 189 degrees, tan(94.5) is off to infinity and the formula
+   hands back a detection range under a foot. These are wide lenses with
+   barrel distortion - the app settled that when it moved the camera view to a
+   cylindrical projection, linear in bearing, because a perspective divide
+   cannot reach 180 degrees at all.
+
+   Under a cylindrical projection pixels spread evenly across BEARING, so
+   density is angular:
+
+       px per radian = resW / fovH_radians
+       pxPerM(d)     = resW / (fovH_radians * d)
+
+   which stays finite and sensible right through 189 degrees, and matches the
+   projection the renderer already uses. Using anything else here would put
+   the numbers and the picture back into disagreement, which is the one thing
+   this codebase refuses to do.
+
+   EN 62676-4 (DORI) fixes what those densities are worth:
+   detect 25, observe 62, recognise 125, identify 250 px per metre.
+
+   This app keeps two tiers - the ones the UI has always shown - mapped onto
+   recognise and identify. DORI's detect tier is deliberately unused: it
+   reaches hundreds of feet, which is meaningless outdoors at night.
+*/
+const M_PER_FT = 0.3048;
+const DORI = { recognise: 125, identify: 250 };
+
+// Distance in feet at which this camera delivers `pxPerM` pixels per metre.
+function distForDensity(spec, pxPerM){
+  const h = rad(Math.max(spec.fovH, 1));
+  const m = spec.resW / (h * pxPerM);
+  return m / M_PER_FT;
+}
+
+// A camera's usable outer range, before DORI. Daylight uses an optional
+// catalog cap; night uses whatever the camera can actually light up, and a
+// camera with no IR and no floodlight sees nothing at night.
+function rangeCap(spec){
+  if(night()){
+    const lit = Math.max(spec.irFt||0, spec.floodlightFt||0);
+    return lit>0 ? lit : 0;
+  }
+  return spec.maxRangeFt || Infinity;
+}
+const identifyFt = spec => Math.min(distForDensity(spec, DORI.identify), rangeCap(spec));
+const detectFt   = spec => Math.min(distForDensity(spec, DORI.recognise), rangeCap(spec));
+
+// Resolve a placed camera to the spec the coverage model uses. A camera whose
+// catalog entry has gone missing falls back to its embedded copy, so a scene
+// never silently loses its geometry.
+function specOf(c){
+  if(c._spec)return c._spec;
+  const e = c.catKey ? CAT.byKey('cameras', c.catKey) : null;
+  const src = e || c.spec || {};
+  const resW = (src.resolution&&src.resolution.w) || 1920;
+  const resH = (src.resolution&&src.resolution.h) || 1080;
+  const fovH = src.fovH || 90;
+  // Not every manufacturer publishes a vertical figure. Falling back to the
+  // sensor aspect is the least-wrong assumption and is flagged in the UI.
+  const fovV = src.fovV || deg(2*Math.atan(Math.tan(rad(fovH/2))*resH/resW));
+  const s = {resW,resH,fovH,fovV,
+    irFt:src.irFt||0, floodlightFt:src.floodlightFt||0,
+    maxRangeFt:src.maxRangeFt||0,
+    ptz:!!src.ptz, poe:!!src.poe, wifi:!!src.wifi,
+    formats:src.formats||['H.265'],
+    brand:src.brand||'', model:src.model||'custom',
+    fovVAssumed:!src.fovV};
+  c._spec = s;
+  return s;
+}
+const clearSpecCache = () => cams.forEach(c=>{ delete c._spec; });
+/* ---------------- 3D occlusion ---------------- */
+/*
+   Everything that answers "can this camera see that point" still funnels
+   through quality() / blocked(). The shape tests themselves now live in
+   shapes.js so the AO bake's caster cannot drift from this code.
+*/
 function blocked(c,x,y,tz){
-  if(!$('tOcc').checked)return false;
+  if(!occOn())return false;
   const dx=x-c.x, dy=y-c.y, dz=tz-c.z;
   for(const b of boxes){
     if(!b.on)continue;
-    // a camera inside a box's own volume isn't blocked by it (mounted under a roof)
-    if(c.x>b.x0-.02&&c.x<b.x1+.02&&c.y>b.y0-.02&&c.y<b.y1+.02&&
-       c.z>baseAt(b,c.x,c.y)-.02&&c.z<topAt(b,c.x,c.y)+.02)continue;
-    if(isFlat(b)){
-      if(segHitsBox(c.x,c.y,c.z,dx,dy,dz,{x0:b.x0,y0:b.y0,x1:b.x1,y1:b.y1,z0:b.zb[0],z1:b.zt[0]}))return true;
-    } else if(hitsWarped(c,dx,dy,dz,b))return true;
+    // a camera inside an occluder's own volume isn't blocked by it
+    // (mounted under a roof, on a post, inside a porch)
+    if(insideOccluder(b,c.x,c.y,c.z))continue;
+    if(hitsOccluder(b,c.x,c.y,c.z,dx,dy,dz))return true;
   }
   if(hitsFence(c.x,c.y,c.z,dx,dy,dz))return true;
   return false;
 }
-// 0 none, 1 detection, 2 face-ID
+// 0 none, 1 detection, 2 face-ID.
+//
+// The two tiers are DORI recognise and identify computed from the camera's
+// own resolution and field of view, so a 4K camera genuinely outreaches a 2K
+// one. Both are clamped by what the camera can light: at night that is IR or
+// floodlight distance, and a camera with neither contributes nothing.
 function qual(c,x,y,tz,aim,tlt){
-  const L=lensOf(c);
+  const S=specOf(c);
   const dx=x-c.x, dy=y-c.y;
   const hd=Math.hypot(dx,dy);
-  if(hd>L.r)return 0;
+  const far=detectFt(S);
+  if(hd>far)return 0;
   const az=deg(Math.atan2(dy,dx));
-  if(Math.abs(((az-aim+540)%360)-180)>L.f/2)return 0;
+  if(Math.abs(((az-aim+540)%360)-180)>S.fovH/2)return 0;
   const elv=deg(Math.atan2(c.z-tz,Math.max(hd,1e-6)));   // + = looking down
-  if(Math.abs(elv-tlt)>L.vf/2)return 0;
+  if(Math.abs(elv-tlt)>S.fovV/2)return 0;
   if(blocked(c,x,y,tz))return 0;
-  return hd<=20?2:1;
+  return hd<=identifyFt(S)?2:1;
 }
 // every stop in the circuit: home first, then keyframes
 function stops(c){
   const home={a:c.a,t:c.t||0,d:c.hd||20};
-  if((c.lens||'ptz')!=='ptz'||!c.tour||!c.tour.length)return [home];
+  if(!specOf(c).ptz||!c.tour||!c.tour.length)return [home];
   return [home,...c.tour];
 }
 // Bounce playback: 1 -> 2 -> 3 -> 2 -> 1, not 1 -> 2 -> 3 -> 1.
@@ -932,10 +1450,9 @@ function swept(c,x,y,tz){
   return {q,frac:tot?seen/tot:0};
 }
 function quality(c,x,y,tz){
-  if($('tTour')&&$('tTour').checked)return swept(c,x,y,tz).q;
+  if(tourOn())return swept(c,x,y,tz).q;
   return qual(c,x,y,tz,c.a,c.t||0);
 }
-
 /* ---------------- world <-> screen ---------------- */
 const VIEW={x0:-34,y0:-30,w:100,h:88};
 let W=900,H=700, zoom2=1, ctrX=VIEW.x0+VIEW.w/2, ctrY=VIEW.y0+VIEW.h/2;
@@ -959,10 +1476,10 @@ const cov=$('cov'), cx2=cov.getContext('2d');
 function paintCoverage(coarse){
   cov.width=W; cov.height=H;
   cx2.clearRect(0,0,W,H);
-  const tz=parseFloat($('tz').value);
+  const tz=targetZ();
   const step=coarse?2.2:1.1;                       // world ft per sample
   const px=Math.max(2,Math.ceil(step*T.s));
-  const showId=$('tId').checked;
+  const showId=idOn();
   const live=cams.filter(c=>c.on);
   const wx0=sx(0),wy0=sy(0),wx1=sx(W),wy1=sy(H);
   for(let gx=wx0;gx<wx1;gx+=step){
@@ -1035,7 +1552,7 @@ function drawPlan(){
   svg.setAttribute('width',W); svg.setAttribute('height',H);
   svg.textContent='';
   const g=el('g'); svg.append(g);
-  if($('tGrid').checked){
+  if(gridOn()){
     const a=Math.floor(sx(0)/5)*5,bb=Math.ceil(sx(W)/5)*5;
     const c0=Math.floor(sy(0)/5)*5,d0=Math.ceil(sy(H)/5)*5;
     for(let v=a;v<=bb;v+=5)g.append(el('line',{class:'gridline',x1:wx(v),y1:0,x2:wx(v),y2:H}));
@@ -1079,14 +1596,14 @@ function drawPlan(){
     }
   }
   // coverage cones
-  if($('rmode').value==='cones'){
-    const tz=parseFloat($('tz').value);
+  if(drawMode()==='cones'){
+    const tz=targetZ();
     const astep=coarse?3:1.25, dstep=coarse?1.6:0.8;
     cams.forEach(c=>{
       if(!c.on)return;
       const k=colC(c), dim=(sel&&sel!==c.id)?.13:1;
       const gc=el('g'); gc.style.opacity=dim; gc.style.pointerEvents='none';
-      if($('tTour').checked&&(c.lens||'ptz')==='ptz'&&c.tour&&c.tour.length){
+      if(tourOn()&&(c.lens||'ptz')==='ptz'&&c.tour&&c.tour.length){
         const save={a:c.a,t:c.t};
         c.tour.forEach(kf=>{
           c.a=kf.a; c.t=kf.t;
@@ -1099,7 +1616,7 @@ function drawPlan(){
       conePaths(c,tz,1,astep,dstep).forEach(d=>
         gc.append(el('path',{d,fill:k,'fill-opacity':.14,stroke:k,
           'stroke-opacity':.5,'stroke-width':.9,'stroke-linejoin':'round'})));
-      if($('tId').checked)
+      if(idOn())
         conePaths(c,tz,2,astep,dstep).forEach(d=>
           gc.append(el('path',{d,fill:k,'fill-opacity':.24,stroke:'none'})));
       g.append(gc);
@@ -1168,7 +1685,7 @@ function seesPoint(c,x,y,z,skip){
   if(Math.abs(((deg(Math.atan2(dy,dx))-c.a+540)%360)-180)>L.f/2)return 0;
   const e2=deg(Math.atan2(c.z-z,hd));
   if(Math.abs(e2-(c.t||0))>L.vf/2)return 0;
-  if($('tOcc').checked){
+  if(occOn()){
     for(const b of boxes){
       if(!b.on||b===skip)continue;
       if(c.x>b.x0-.02&&c.x<b.x1+.02&&c.y>b.y0-.02&&c.y<b.y1+.02&&
@@ -1247,7 +1764,7 @@ function castRay3(c,azm,elv2,maxR){
   const dx=Math.cos(a)*Math.cos(e), dy=Math.sin(a)*Math.cos(e), dz=-Math.sin(e);
   let lim=maxR;
   if(dz<-1e-6)lim=Math.min(lim,(0-c.z)/dz);            // ground plane
-  if($('tOcc').checked){
+  if(occOn()){
     const step=0.6;
     for(let t=0.5;t<lim;t+=step){
       const x=c.x+dx*t, y=c.y+dy*t, z=c.z+dz*t;
@@ -1269,7 +1786,7 @@ function buildFrusta(){
     if(!c.on)return;
     if(sel&&sel!==c.id)return;
     const L=lensOf(c), k=colC(c);
-    const list=($('tTour').checked)?stops(c):[{a:c.a,t:c.t||0,d:1}];
+    const list=(tourOn())?stops(c):[{a:c.a,t:c.t||0,d:1}];
     list.forEach((st,si)=>{
       const NA=Math.max(6,Math.round(L.f/12)), NV=5;
       const grid=[];
@@ -1747,7 +2264,7 @@ function draw3d(){
     items.push({d:-1e6,e:el('line',{x1:a.x,y1:a.y,x2:b.x,y2:b.y,stroke:'#1E2732','stroke-width':1})});
     items.push({d:-1e6,e:el('line',{x1:c.x,y1:c.y,x2:d.x,y2:d.y,stroke:'#1E2732','stroke-width':1})});
   }
-  if($('tFrus').checked&&frusta&&!orbit){
+  if(frusOn()&&frusta&&!orbit){
     frusta.forEach(f=>{
       const P=f.p.map(([x,y,z])=>proj(x,y,z));
       items.push({d:P.reduce((s,q)=>s+q.d,0)/P.length,
@@ -1755,7 +2272,7 @@ function draw3d(){
           fill:f.col,'fill-opacity':f.a,stroke:f.col,'stroke-opacity':f.a*0.5,'stroke-width':.4})});
     });
   }
-  if($('tSplat').checked&&splat&&!orbit){
+  if(splatOn()&&splat&&!orbit){
     splat.forEach(sp=>{
       const P=sp.p.map(([x,y,z])=>proj(x,y,z));
       items.push({d:P.reduce((s,q)=>s+q.d,0)/4+0.35,
@@ -1806,7 +2323,7 @@ function draw3d(){
     const base=proj(c.x,c.y,0), top=proj(c.x,c.y,c.z);
     items.push({d:top.d,e:el('line',{x1:base.x,y1:base.y,x2:top.x,y2:top.y,
       stroke:k,'stroke-width':1,'stroke-opacity':.45,'stroke-dasharray':'3 3'})});
-    if(!$('tFrus').checked)
+    if(!frusOn())
     [-L.f/2,0,L.f/2].forEach(off=>{
       [-L.vf/2,L.vf/2].forEach(vo=>{
         const aa=rad(c.a+off), tt=rad((c.t||0)+vo);
@@ -1828,12 +2345,19 @@ function draw3d(){
 /* ---------------- WebGL scene ---------------- */
 let glCtx=null, glCells=new Map(), meshCache=null, meshKey='';
 function sceneKey(){
-  return JSON.stringify([boxes.map(b=>[b.on,b.x0,b.y0,b.x1,b.y1,b.zb,b.zt,b.name]),
+  // Anything that moves a vertex has to appear here or the bake goes stale.
+  // yaw, parent, shape and the cylinder radii are as load-bearing as x0/y0.
+  return JSON.stringify([boxes.map(b=>[b.on,b.x0,b.y0,b.x1,b.y1,b.zb,b.zt,b.name,
+                                       b.yaw||0,b.parent||'',b.shape||'box',
+                                       b.r||0,b.canopyR||0,b.canopyH||0]),
                          prop,fence]);
 }
 function env(){
   return {boxes,prop,fence,MAT,matOf,XY,TC,BC,baseAt,topAt,inProp,zmin,zmax,
-          flatT,flatB};
+          flatT,flatB,
+          // the transform pipeline, so the bake places vertices where the
+          // occlusion maths says the solids actually are
+          worldM,xformPt:TX.xformPt,xformDir:TX.xformDir};
 }
 function ensureMesh(){
   const k=sceneKey();
@@ -1917,9 +2441,295 @@ function renderPOVGL_(cam,cv){
   return true;
 }
 
+/* ---------------- coverage totals ---------------- */
+/*
+   One sweep function, run two ways: coarsely on the main thread for
+   responsiveness, and at full resolution in a worker once interaction stops.
+
+   The worker is assembled from the SOURCE TEXT of the functions below, via
+   Function.prototype.toString. That is deliberate. Hand-copying the occlusion
+   code into a worker would create a third implementation to keep in step with
+   blocked() and makeCaster, and the developer guide is emphatic that this
+   class of divergence fails silently. Stringifying the live functions means
+   the worker cannot be running different logic - it is running these bytes.
+*/
+
+// The sweep. Pure: everything it touches is module state the worker also has.
+function computeCoverage(step){
+  const tz=targetZ();
+  const B=propBounds();
+  let ac=0,ai=0,n=0;
+  const near=(x,y)=>boxes.some(b=>{
+    if(!b.on||zmax(b)<3)return false;
+    const dx=Math.max(b.x0-x,0,x-b.x1), dy=Math.max(b.y0-y,0,y-b.y1);
+    return Math.hypot(dx,dy)<=25;});
+  let nc=0,cc=0,ci=0,dut=0;
+  const live=cams.filter(c=>c.on);
+  const anyTour=live.some(c=>c.tour&&c.tour.length);
+  for(let x=B.x0;x<=B.x1;x+=step)for(let y=B.y0;y<=B.y1;y+=step){
+    if(!inProp(x,y)||inAnyBox(x,y))continue;
+    n++;
+    let best=0;
+    for(const c of live){ const q=quality(c,x,y,tz); if(q>best)best=q; }
+    if(best)ac++;
+    if(best===2)ai++;
+    if(!near(x,y))continue;
+    nc++;
+    if(best)cc++;
+    if(best===2)ci++;
+    if(anyTour){
+      let fr=0;
+      for(const c of live){ const f=swept(c,x,y,tz).frac; if(f>fr)fr=f; }
+      dut+=fr;
+    }
+  }
+  const cell=step*step;
+  return {n,ac,ai,nc,cc,ci,dut,anyTour,
+          area:Math.round(n*cell), areaNear:Math.round(nc*cell)};
+}
+
+/* ---------- worker assembly ---------- */
+// Every function the sweep reaches. Missing one shows up immediately as a
+// ReferenceError in the worker, not as a wrong number.
+function workerSource(){
+  const named=[computeCoverage,quality,qual,swept,stops,order,visits,blocked,
+    hitsOccluder,insideOccluder,canopyOf,segHitsBox,xyRange,segHitsWarped,
+    segHitsCyl,segHitsEllipsoid,localM,worldM,chain,boxById,wouldCycle,
+    hitsFence,inProp,inAnyBox,propBounds,distForDensity,rangeCap,specOf];
+  const arrows={bilin,topAt,baseAt,zmax,zmin,flatT,flatB,isFlat,isIdentityM,
+    identifyFt,detectFt,rad,deg,clamp,norm};
+  const tx='const TX={'+Object.entries(TX)
+    .map(([k,v])=>`${k}:${v.toString()}`).join(',')+'};';
+  const fns=named.map(f=>f.toString()).join('\n');
+  const arr=Object.entries(arrows).map(([k,v])=>`const ${k}=${v.toString()};`).join('\n');
+  return `
+"use strict";
+let boxes=[],prop=[],fence={},cams=[],opts={},sceneGen=0;
+let _mCache=new Map(),_mGen=-1;
+// There is no catalog in here. Every camera arrives with its spec already
+// resolved and attached, so specOf() falls straight through to it - and the
+// worker is therefore guaranteed to be using the same numbers the main thread
+// used, not a second lookup that could resolve differently.
+const CAT={byKey:()=>null};
+const M_PER_FT=${M_PER_FT};
+const DORI=${JSON.stringify(DORI)};
+const MOVE=${MOVE};
+const occOn=()=>opts.occ, tourOn=()=>opts.tour, night=()=>opts.night, targetZ=()=>opts.tz;
+${arr}
+${tx}
+${fns}
+onmessage=function(e){
+  const d=e.data;
+  boxes=d.boxes; prop=d.prop; fence=d.fence; cams=d.cams; opts=d.opts;
+  sceneGen++;
+  postMessage({id:d.id, result:computeCoverage(d.step)});
+};`;
+}
+let covWorker=null, covSeq=0, covPending=null;
+function ensureWorker(){
+  if(covWorker!==null)return covWorker;
+  try{
+    const blob=new Blob([workerSource()],{type:'text/javascript'});
+    covWorker=new Worker(URL.createObjectURL(blob));
+    covWorker.onmessage=e=>{
+      if(e.data.id!==covSeq)return;          // a newer request has superseded this
+      covPending=null;
+      paintStats(e.data.result,false);
+    };
+    covWorker.onerror=()=>{ covWorker=false; };   // fall back to the main thread
+  }catch(err){ covWorker=false; }
+  return covWorker;
+}
+// Strip anything the structured clone cannot carry, and anything the worker
+// has no business seeing.
+const sceneMsg=()=>({
+  boxes:JSON.parse(JSON.stringify(boxes)),
+  prop:JSON.parse(JSON.stringify(prop)),
+  fence:JSON.parse(JSON.stringify(fence)),
+  // Resolve each camera's catalog entry HERE and send it inline. Dropping
+  // catKey stops the worker trying to look anything up.
+  cams:cams.map(c=>{
+    const {_spec,catKey,...rest}=c;
+    const raw=(catKey&&CAT.byKey('cameras',catKey))||c.spec||{};
+    const {source,key,...clean}=raw;
+    return JSON.parse(JSON.stringify({...rest,spec:clean}));
+  }),
+  opts:JSON.parse(JSON.stringify(opts))
+});
+
+let statTimer;
+function updateStats(){
+  // coarse pass now, so the bar is never blank or wrong for long
+  paintStats(computeCoverage(3.0),true);
+  clearTimeout(statTimer);
+  statTimer=setTimeout(()=>{
+    const w=ensureWorker();
+    if(!w){ paintStats(computeCoverage(1.5),false); return; }
+    covSeq++;
+    covPending=covSeq;
+    w.postMessage({...sceneMsg(), step:1.5, id:covSeq});
+  },160);
+}
+/* ---------------- project: persistence and totals ---------------- */
+/*
+   One JSON document holds the scene and a snapshot of only the catalog
+   entries the scene references. That snapshot is what makes a saved project
+   self-describing: open it anywhere, with or without a reachable catalog, and
+   every camera still resolves to the specs its coverage numbers were computed
+   from.
+*/
+const LS_KEY='sightline.project.v1';
+const LS_CAT='sightline.usercatalog.v1';
+
+// Only what the scene actually references, not the whole catalog.
+function projectSnapshot(){
+  const pick=(kind,keys)=>{
+    const out=[];
+    keys.forEach(k=>{
+      const e=CAT.byKey(kind,k);
+      if(e){ const {source,key,...rest}=e; out.push(rest); }
+    });
+    return out;
+  };
+  const camKeys=[...new Set(cams.map(c=>c.catKey).filter(Boolean))];
+  const nvrKeys=[...new Set(nvrs.map(n=>n.catKey).filter(Boolean))];
+  const snap={nvrs:pick('nvrs',nvrKeys), cameras:pick('cameras',camKeys)};
+  // Fall back to the copy embedded on each entity when the catalog has not
+  // loaded yet - otherwise the first autosave would strip the specs.
+  cams.forEach(c=>{ if(c.spec && !snap.cameras.some(e=>e.id===c.spec.id))snap.cameras.push(c.spec); });
+  nvrs.forEach(n=>{ if(n.spec && !snap.nvrs.some(e=>e.id===n.spec.id))snap.nvrs.push(n.spec); });
+  return snap;
+}
+function serialize(){
+  return {
+    schema:1,
+    scene:{
+      nvrs:nvrs.map(({...n})=>n),
+      cameras:cams.map(({_spec,...c})=>c),
+      occluders:boxes.map(({...b})=>b),
+      prop, fence, opts
+    },
+    catalogSnapshot:projectSnapshot()
+  };
+}
+function loadDoc(doc){
+  if(!doc||!doc.scene)return false;
+  const s=doc.scene;
+  if(doc.catalogSnapshot)CAT.seedFromProject(doc.catalogSnapshot);
+  if(Array.isArray(s.nvrs))nvrs=s.nvrs;
+  if(Array.isArray(s.cameras))cams=s.cameras;
+  if(Array.isArray(s.occluders))boxes=s.occluders;
+  if(Array.isArray(s.prop))prop=s.prop;
+  if(s.fence)fence=s.fence;
+  if(s.opts)opts={...opts,...s.opts};
+  migrateScene();
+  return true;
+}
+let saveTimer;
+function autosave(){
+  clearTimeout(saveTimer);
+  saveTimer=setTimeout(()=>{
+    try{ localStorage.setItem(LS_KEY,JSON.stringify(serialize())); }
+    catch(e){ /* private mode or quota: the app still works, it just won't persist */ }
+  },600);
+}
+function restore(){
+  try{
+    const raw=localStorage.getItem(LS_KEY);
+    if(!raw)return false;
+    return loadDoc(JSON.parse(raw));
+  }catch(e){ return false; }
+}
+function restoreUserCatalog(){
+  try{
+    const raw=localStorage.getItem(LS_CAT);
+    if(raw)CAT.addImported(JSON.parse(raw));
+  }catch(e){}
+}
+function exportProject(){
+  const blob=new Blob([JSON.stringify(serialize(),null,2)],{type:'application/json'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='sightline-project.json';
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+// One picker for both kinds of file. A document with a `scene` is a project;
+// one with `nvrs` or `cameras` is a catalog to merge.
+function importFile(onDone){
+  const inp=document.createElement('input');
+  inp.type='file'; inp.accept='.json,application/json';
+  inp.onchange=()=>{
+    const f=inp.files&&inp.files[0]; if(!f)return;
+    const rd=new FileReader();
+    rd.onload=()=>{
+      try{
+        const doc=JSON.parse(rd.result);
+        if(doc.scene){ loadDoc(doc); toast('Project loaded'); }
+        else if(doc.nvrs||doc.cameras){
+          CAT.addImported(doc);
+          try{ localStorage.setItem(LS_CAT,JSON.stringify({nvrs:doc.nvrs||[],cameras:doc.cameras||[]})); }catch(e){}
+          toast(`Catalog merged — ${(doc.nvrs||[]).length} NVRs, ${(doc.cameras||[]).length} cameras`);
+        }
+        else { toast('Not a project or catalog file'); return; }
+        onDone&&onDone();
+      }catch(e){ toast('Could not read that file'); }
+    };
+    rd.readAsText(f);
+  };
+  inp.click();
+}
+
+/* ---------------- recording maths ---------------- */
+/*
+   Continuous recording is assumed. Bitrate is estimated from pixel rate:
+
+       bitrate = w * h * fps * bpp
+
+   The bits-per-pixel constants below are estimates for a typical outdoor
+   scene, not a manufacturer figure - a static view compresses far better
+   than a windy tree line. Motion-only recording would multiply the result by
+   a duty factor this app does not model.
+*/
+const BPP={low:0.030, med:0.060, high:0.100};
+const CODEC_MUL={'H.265':1, 'H.264':1.7, 'H.264+':1.3, 'H.265+':0.8};
+
+const nvrOf=c=>nvrs.find(n=>n.id===c.nvr)||null;
+// camera override, else its recorder's, else the project default
+function inherit(c,field){
+  if(c[field]!==undefined&&c[field]!==null)return {v:c[field],from:'camera'};
+  const n=nvrOf(c);
+  if(n&&n[field]!==undefined&&n[field]!==null)return {v:n[field],from:'nvr'};
+  return {v:opts[field],from:'project'};
+}
+function bitrateOf(c){
+  const S=specOf(c);
+  const fps=inherit(c,'fps').v, q=inherit(c,'quality').v;
+  const codec=(S.formats&&S.formats[0])||'H.265';
+  const mul=CODEC_MUL[codec]||1;
+  return S.resW*S.resH*fps*(BPP[q]||BPP.med)*mul/1e6;   // Mbps
+}
+function totals(){
+  const live=cams.filter(c=>c.on);
+  const mbps=live.reduce((s,c)=>s+bitrateOf(c),0);
+  const storageGB=nvrs.filter(n=>n.on).reduce((s,n)=>s+((n.storageGB??specOfNvr(n).storageGB)||0),0);
+  const cost=nvrs.reduce((s,n)=>s+(n.price||0),0)+cams.reduce((s,c)=>s+(c.price||0),0);
+  const days=mbps>0?(storageGB*8*1000)/mbps/86400:0;
+  // channels used vs available, so an over-subscribed recorder is visible
+  const chans=nvrs.filter(n=>n.on).reduce((s,n)=>s+(specOfNvr(n).channels||0),0);
+  return {nvrs:nvrs.length, cams:live.length, cost, mbps, storageGB, days, chans};
+}
+function specOfNvr(n){
+  const e=n.catKey?CAT.byKey('nvrs',n.catKey):null;
+  return e||n.spec||{};
+}
+const priceKnown=()=>cams.some(c=>c.price)||nvrs.some(n=>n.price);
 /* ---------------- render ---------------- */
 let coarse=false;
 function render(){
+  // Transform matrices cache against this, so they are stale for at most one
+  // frame and never need invalidating by hand on an edit.
+  sceneGen++;
   T=fit();
   if(mode!=='3d')$('gl3d').style.display='none';
   if(mode==='pov'){
@@ -1927,72 +2737,30 @@ function render(){
     renderPOV();
   }
   else if(mode==='split'){
-    const heat=$('rmode').value==='heat';
+    const heat=drawMode()==='heat';
     cov.style.display=heat?'':'none'; svg.style.display=''; v3.style.display='none';
     if(heat)paintCoverage(coarse);
     drawPlan();
     renderPOV();
   }
   else if(mode==='2d'){
-    const heat=$('rmode').value==='heat';
+    const heat=drawMode()==='heat';
     cov.style.display=heat?'':'none'; svg.style.display=''; v3.style.display='none';
     if(heat)paintCoverage(coarse);
     drawPlan(); }
   else if(mode==='3d'){ cov.style.display='none'; svg.style.display='none';
     $('gl3d').style.display=''; v3.style.display='';
     GLON=render3DGL();
-    splat=(!playing&&$('tSplat').checked)?buildSplat():null;
-    frusta=(!playing&&$('tFrus').checked)?buildFrusta():null;
+    splat=(!playing&&splatOn())?buildSplat():null;
+    frusta=(!playing&&frusOn())?buildFrusta():null;
     draw3d(); }
-  if(!playing){ $('code').value=encode(); updateStats(); }
+  if(!playing){
+    const code=$('code');            // only present when Project is selected
+    if(code)code.value=encode();
+    updateStats();
+    autosave();
+  }
 }
-let statTimer;
-function updateStats(){
-  clearTimeout(statTimer);
-  statTimer=setTimeout(()=>{
-    const tz=parseFloat($('tz').value);
-    const B=propBounds();
-    let ac=0,ai=0,n=0;
-    for(let x=B.x0;x<=B.x1;x+=1.5)for(let y=B.y0;y<=B.y1;y+=1.5){
-      if(!inProp(x,y)||inAnyBox(x,y))continue;
-      n++;
-      let best=0;
-      for(const c of cams){ if(!c.on)continue; const q=quality(c,x,y,tz); if(q>best)best=q; }
-      if(best)ac++; if(best===2)ai++;
-    }
-    // second pass: only ground within 25 ft of a structure
-    let nc=0,cc=0,ci=0,dut=0;
-    const near=(x,y)=>boxes.some(b=>{
-      if(!b.on||zmax(b)<3)return false;
-      const dx=Math.max(b.x0-x,0,x-b.x1), dy=Math.max(b.y0-y,0,y-b.y1);
-      return Math.hypot(dx,dy)<=25;});
-    for(let x=B.x0;x<=B.x1;x+=1.5)for(let y=B.y0;y<=B.y1;y+=1.5){
-      if(!inProp(x,y)||inAnyBox(x,y)||!near(x,y))continue;
-      nc++;
-      let best=0,fr=0;
-      for(const c of cams){ if(!c.on)continue;
-        const q=quality(c,x,y,tz);
-        if(q>best)best=q;
-        const f=swept(c,x,y,tz).frac;
-        if(f>fr)fr=f; }
-      if(best)cc++; if(best===2)ci++;
-      dut+=fr;
-    }
-    const area=Math.round(n*2.25), areaN=Math.round(nc*2.25);
-    $('stats').textContent='';
-    $('statline').innerHTML=n?
-      `<b>Near buildings</b> (within 25 ft, ~${areaN.toLocaleString()} sq ft): `+
-      `<b>${Math.round(100*cc/Math.max(nc,1))}%</b> on camera, <b>${Math.round(100*ci/Math.max(nc,1))}%</b> at face-ID.`+
-      `<br><span style="color:var(--dim)">Whole lot (~${area.toLocaleString()} sq ft): `+
-      `${Math.round(100*ac/n)}% on camera, ${Math.round(100*ai/n)}% at face-ID.`+
-      (cams.some(c=>c.on&&c.tour&&c.tour.length)
-        ? `<br>Near ground is watched <b style="color:var(--bone)">${
-            Math.round(100*dut/Math.max(nc,1))}%</b> of each PT cycle on average.`
-        : '')+`</span>`
-      :'Property boundary encloses no open ground.';
-  },120);
-}
-
 /* ---------------- interaction: plan ---------------- */
 let drag=null;
 function toW(e){const r=$('stage').getBoundingClientRect();
@@ -2162,219 +2930,747 @@ $('m2d').onclick=()=>{setMode('2d');
 $('m3d').onclick=()=>{setMode('3d');
   $('hint').textContent='Drag to orbit · shift-drag or right-drag to pan · scroll to zoom · white handles = top, grey = base';render();};
 
-/* ---------------- panel ---------------- */
-function numFld(lbl,val,cb,step){
-  const d=document.createElement('div'); d.className='fld';
-  const l=document.createElement('label'); l.textContent=lbl;
-  const i=document.createElement('input'); i.className='t'; i.type='number';
-  i.step=step||0.5; i.value=val;
-  i.oninput=()=>{const v=parseFloat(i.value); if(!Number.isNaN(v)){cb(v);render();}};
-  d.append(l,i); return d;
-}
-function list(){
-  const L=$('camlist'); L.textContent='';
-  cams.forEach(c=>{
-    const k=colC(c);
-    const d=document.createElement('div');
-    d.className='card'+(c.on?'':' off')+(sel===c.id?' sel':'');
-    d.style.setProperty('--dot',k);
-    const h=document.createElement('div'); h.className='head';
-    const lo=lowVis(c);
-    h.innerHTML=`<div class="b"><div class="id">${c.id} · ${lensOf(c).label}</div>
-      <div class="nm">${c.name}</div><div class="mt">${c.note}<br>
-      x ${c.x} · y ${c.y} · ${c.z} ft · aim ${c.a}° · tilt ${c.t}°${
-        (c.tour&&c.tour.length)?`<br>PT circuit: ${stops(c).length} stops, ${cycle(c)}s${
-          stops(c).length>2?' bounce':''}`:''}
-      ${lo?`<br><b>${lo}</b>`:''}</div></div>`;
-    const eye=document.createElement('button'); eye.className='eye';
-    eye.textContent=c.on?'●':'○';
-    eye.onclick=ev=>{ev.stopPropagation();c.on=!c.on;render();list();};
-    h.append(eye);
-    h.onclick=()=>{sel=sel===c.id?null:c.id;selBox=null;render();list();};
-    d.append(h);
-    const ed=document.createElement('div'); ed.className='edit';
-    const nm=document.createElement('div'); nm.className='fld';
-    const nl=document.createElement('label'); nl.textContent='name';
-    const ni=document.createElement('input'); ni.className='t'; ni.value=c.name;
-    ni.oninput=()=>{c.name=ni.value;$('code').value=encode();};
-    nm.append(nl,ni); ed.append(nm);
-    const lr=document.createElement('div'); lr.className='row'; lr.style.marginBottom='5px';
-    Object.keys(LENS).forEach(key=>{
-      const bt=document.createElement('button'); bt.className='act'; bt.textContent=LENS[key].label;
-      if((c.lens||'ptz')===key){bt.style.borderColor=k;bt.style.background='#212A35';}
-      bt.onclick=()=>{c.lens=key;render();list();};
-      lr.append(bt);});
-    ed.append(lr);
-    ed.append(numFld('height ft',c.z,v=>c.z=v));
-    ed.append(numFld('down-tilt°',c.t,v=>c.t=v,1));
-    ed.append(numFld('aim °',c.a,v=>c.a=norm(v),1));
-    if((c.lens||'ptz')==='ptz'){
-      const hdr=document.createElement('div');
-      hdr.style.cssText='font-family:var(--mono);font-size:9.5px;color:var(--dim);margin:8px 0 4px;letter-spacing:.1em';
-      const cyc=cycle(c);
-      const n=stops(c).length;
-      hdr.textContent=`PT CIRCUIT · ${n} stops · ${cyc}s cycle`+
-        (n>2?' · bounce':'');
-      ed.append(hdr);
-      ed.append(numFld('home s',c.hd||20,v=>c.hd=Math.max(1,v),1));
-      (c.tour||[]).forEach((kf,i)=>{
-        const row=document.createElement('div'); row.className='fld';
-        const lb=document.createElement('label'); lb.textContent='stop '+(i+1);
-        const mk=(val,cb,w)=>{const n=document.createElement('input');
-          n.className='t'; n.type='number'; n.step=1; n.value=val; n.style.flex=w;
-          n.oninput=()=>{const v=parseFloat(n.value); if(!Number.isNaN(v)){cb(v);render();}};
-          return n;};
-        const del=document.createElement('button');
-        del.className='eye'; del.textContent='×'; del.title='remove stop';
-        del.onclick=()=>{c.tour.splice(i,1);render();list();};
-        row.append(lb,
-          mk(kf.a,v=>kf.a=norm(v),'1 1 0'),
-          mk(kf.t,v=>kf.t=clamp(v,-30,60),'1 1 0'),
-          mk(kf.d,v=>kf.d=Math.max(1,v),'1 1 0'),
-          del);
-        row.title='aim° / tilt° / dwell s';
-        ed.append(row);
-      });
-      const kr=document.createElement('div'); kr.className='row'; kr.style.marginBottom='5px';
-      const add=document.createElement('button'); add.className='act';
-      add.textContent='+ Stop here';
-      add.title='Capture the current aim and tilt as a circuit stop';
-      add.onclick=()=>{
-        c.tour=c.tour||[];
-        if(c.tour.length>=2){toast('3 stops total is the cap');return;}
-        const last=c.tour.length?c.tour[c.tour.length-1].a:c.a;
-        c.tour.push({a:norm(last+60),t:c.t||15,d:8});
-        render();list();};
-      const clr=document.createElement('button'); clr.className='act'; clr.textContent='Clear';
-      clr.onclick=()=>{c.tour=[];render();list();};
-      kr.append(add,clr); ed.append(kr);
-    }
-    const rr=document.createElement('div'); rr.className='row';
-    const del=document.createElement('button'); del.className='act danger'; del.textContent='Delete';
-    del.onclick=()=>{cams=cams.filter(v=>v!==c);sel=null;render();list();};
-    rr.append(del); ed.append(rr); d.append(ed);
-    L.append(d);
-  });
+/* ---------------- scene tree ---------------- */
+/*
+   NVRs own cameras (a wiring relationship: channels, storage, cost).
+   Occluders nest spatially - a child inherits its parent's transform.
+   Both sections collapse; the collapsed set is remembered per node id.
+*/
+let collapsed=new Set();
+let selProject=false;
+const isOpen=id=>!collapsed.has(id);
+function toggleNode(id){ collapsed.has(id)?collapsed.delete(id):collapsed.add(id); renderTree(); }
 
-  const B=$('boxlist'); B.textContent='';
-  {
-    const d=document.createElement('div');
-    d.className='card'+(selProp?' sel':''); d.style.setProperty('--dot','#B9C0C9');
-    const h=document.createElement('div'); h.className='head';
-    const A=polyArea();
-    h.innerHTML=`<div class="b"><div class="id">PROPERTY</div>
-      <div class="nm">Boundary</div><div class="mt">${prop.length} vertices · ~${
-        Math.round(A).toLocaleString()} sq ft<br>${
-        selProp?'drag a vertex · + adds one · shift-click removes':'click to edit'}</div></div>`;
-    h.onclick=()=>{selProp=!selProp;sel=null;selBox=null;render();list();};
-    d.append(h);
-    const ed=document.createElement('div'); ed.className='edit';
-    // scale the polygon about its centroid to hit a known lot area
-    const sr=document.createElement('div'); sr.className='fld';
-    const sl2=document.createElement('label'); sl2.textContent='lot sq ft';
-    const si=document.createElement('input'); si.className='t'; si.type='number'; si.step=100;
-    si.value=Math.round(polyArea());
-    const sb=document.createElement('button'); sb.className='act'; sb.style.flex='0 0 62px';
-    sb.textContent='Scale';
-    sb.onclick=()=>{
-      const target=parseFloat(si.value), cur=polyArea();
-      if(!(target>0)||!(cur>0))return;
-      const k=Math.sqrt(target/cur);
-      const cx0=prop.reduce((a,v)=>a+v[0],0)/prop.length;
-      const cy0=prop.reduce((a,v)=>a+v[1],0)/prop.length;
-      prop=prop.map(([x,y])=>[Math.round((cx0+(x-cx0)*k)*10)/10,
-                              Math.round((cy0+(y-cy0)*k)*10)/10]);
-      render();list();toast('Scaled to '+Math.round(polyArea()).toLocaleString()+' sq ft');
-    };
-    sr.append(sl2,si,sb); ed.append(sr);
-    const r=document.createElement('div'); r.className='row';
-    const sq=document.createElement('button'); sq.className='act'; sq.textContent='Reset to square';
-    sq.onclick=()=>{prop=DEF_PROP();render();list();};
-    const md=document.createElement('button'); md.className='act'; md.textContent='Measured lot';
-    md.title='Restore the surveyed boundary without touching cameras or structures';
-    md.onclick=()=>{const {P}=decodeRaw(MEASURED); if(P){prop=P;splat=null;render();list();
-      toast('Boundary restored — '+Math.round(polyArea()).toLocaleString()+' sq ft');}};
-    const ft=document.createElement('button'); ft.className='act'; ft.textContent='Fit to structures';
-    ft.onclick=()=>{
-      const on=boxes.filter(b=>b.on);
-      if(!on.length)return;
-      const m=8;
-      const x0=Math.min(...on.map(b=>b.x0))-m, x1=Math.max(...on.map(b=>b.x1))+m;
-      const y0=Math.min(...on.map(b=>b.y0))-m, y1=Math.max(...on.map(b=>b.y1))+m;
-      prop=[[x0,y0],[x1,y0],[x1,y1],[x0,y1]].map(([a,c])=>[Math.round(a*10)/10,Math.round(c*10)/10]);
-      render();list();};
-    r.append(md,sq); ed.append(r);
-    const r2=document.createElement('div'); r2.className='row'; r2.style.marginTop='5px';
-    r2.append(ft); ed.append(r2); d.append(ed);
-    B.append(d);
+// One selection across four kinds of entity, so the property editor only ever
+// has one thing to render.
+function select(kind,id){
+  sel=null; selBox=null; selProp=false; selNvr=null; selProject=false;
+  if(kind==='cam')sel=id;
+  else if(kind==='box')selBox=id;
+  else if(kind==='nvr')selNvr=id;
+  else if(kind==='prop')selProp=true;
+  else if(kind==='project')selProject=true;
+  render(); list();
+}
+const selKind=()=> sel?'cam' : selBox?'box' : selNvr?'nvr' : selProp?'prop' : selProject?'project' : null;
+
+const mk=(tag,cls,txt)=>{const e=document.createElement(tag); if(cls)e.className=cls;
+  if(txt!==undefined)e.textContent=txt; return e;};
+
+function row({label,meta,selected,dot,on,onSelect,onEye,indent,twisty,onTwisty}){
+  const r=mk('div','trow'+(selected?' sel':'')+(on===false?' off':''));
+  if(dot)r.style.setProperty('--dot',dot);
+  r.style.paddingLeft=(6+(indent||0)*13)+'px';
+  const tw=mk('span','tw',twisty===undefined?'':(twisty?'▾':'▸'));
+  if(twisty!==undefined){ tw.style.cursor='pointer';
+    tw.onclick=e=>{e.stopPropagation(); onTwisty&&onTwisty();}; }
+  r.append(tw);
+  if(dot){ const d=mk('span','dot'); d.style.background=dot; r.append(d); }
+  r.append(mk('span','nm',label));
+  if(meta)r.append(mk('span','mt',meta));
+  if(onEye){
+    const b=mk('button','eye',on?'●':'○');
+    b.onclick=e=>{e.stopPropagation(); onEye();};
+    r.append(b);
   }
-  boxes.forEach(b=>{
-    const d=document.createElement('div');
-    d.className='card'+(b.on?'':' off')+(selBox===b.id?' sel':'');
-    d.style.setProperty('--dot','#5A6678');
-    const h=document.createElement('div'); h.className='head';
-    h.innerHTML=`<div class="b"><div class="id">${b.id}</div><div class="nm">${b.name}</div>
-      <div class="mt">${b.x0},${b.y0} → ${b.x1},${b.y1}<br>${
-        isFlat(b)?`base ${b.zb[0]} ft · top ${b.zt[0]} ft`
-        :`sloped ${zmin(b)}–${zmax(b)} ft`}</div></div>`;
-    const eye=document.createElement('button'); eye.className='eye';
-    eye.textContent=b.on?'●':'○';
-    eye.onclick=ev=>{ev.stopPropagation();b.on=!b.on;render();list();};
-    h.append(eye);
-    h.onclick=()=>{selBox=selBox===b.id?null:b.id;sel=null;render();list();};
-    d.append(h);
-    const ed=document.createElement('div'); ed.className='edit';
-    const nm=document.createElement('div'); nm.className='fld';
-    const nl=document.createElement('label'); nl.textContent='name';
-    const ni=document.createElement('input'); ni.className='t'; ni.value=b.name;
-    ni.oninput=()=>{b.name=ni.value;$('code').value=encode();};
-    nm.append(nl,ni); ed.append(nm);
-    // edge heights: each field moves the two corners on that edge together
-    const eLbl={N:'N edge',E:'E edge',S:'S edge',W:'W edge'};
-    [['zt','top'],['zb','base']].forEach(([key,word])=>{
-      EDGES.forEach(edg=>{
-        const cur=(b[key][edg.c[0]]+b[key][edg.c[1]])/2;
-        ed.append(numFld(word+' '+edg.k,Math.round(cur*100)/100,v=>{
-          edg.c.forEach(i=>b[key][i]=v);
-          if(key==='zt')b.zt=b.zt.map((z,i)=>Math.max(z,b.zb[i]+.15));
-          else b.zb=b.zb.map((z,i)=>Math.min(z,b.zt[i]-.15));
-        },0.25));
-      });
+  r.onclick=onSelect;
+  return r;
+}
+function section(title,count,onAdd,openKey,body){
+  const wrap=mk('div','tsec');
+  const h=mk('div','thead');
+  h.append(mk('span','tw',isOpen(openKey)?'▾':'▸'), mk('span',null,title), mk('span','cnt','· '+count));
+  h.onclick=()=>toggleNode(openKey);
+  if(onAdd){
+    const b=mk('button','tadd','+');
+    b.title='Add';
+    b.onclick=e=>{e.stopPropagation(); onAdd();};
+    h.append(b);
+  }
+  wrap.append(h);
+  if(isOpen(openKey))body(wrap);
+  return wrap;
+}
+
+function renderTree(){
+  const pane=$('treepane'); pane.textContent='';
+
+  // project root
+  pane.append(row({label:'Project', meta:opts.night?'night':'day',
+    selected:selProject, indent:0, onSelect:()=>select('project')}));
+
+  // ---- NVRs, each with its cameras ----
+  pane.append(section('NVRs',nvrs.length,()=>pickNvr(),'sec-nvr',wrap=>{
+    if(!nvrs.length){
+      const e=mk('div','note','No recorder yet. Add one to hang cameras off it.');
+      e.style.padding='2px 12px 6px'; wrap.append(e);
+    }
+    nvrs.forEach(n=>{
+      const kids=cams.filter(c=>c.nvr===n.id);
+      const S=specOfNvr(n);
+      const over=S.channels&&kids.length>S.channels;
+      const r=row({label:n.name,
+        meta:`${kids.length}/${S.channels||'?'}`,
+        selected:selNvr===n.id, on:n.on!==false, indent:1,
+        twisty:isOpen(n.id), onTwisty:()=>toggleNode(n.id),
+        onSelect:()=>select('nvr',n.id),
+        onEye:()=>{n.on=n.on===false;render();list();}});
+      if(over)r.querySelector('.mt').style.color='var(--warn)';
+      const add=mk('button','tadd','+');
+      add.title='Add a camera to this recorder';
+      add.onclick=e=>{e.stopPropagation(); pickCamera(n);};
+      r.append(add);
+      wrap.append(r);
+      if(isOpen(n.id))kids.forEach(c=>wrap.append(camRow(c,2)));
     });
-    const r1=document.createElement('div'); r1.className='row'; r1.style.marginTop='4px';
-    const fl=document.createElement('button'); fl.className='act'; fl.textContent='Level';
-    fl.onclick=()=>{const m=Math.max(...b.zt),n=Math.min(...b.zb);
-      b.zt=[m,m,m,m];b.zb=[n,n,n,n];render();list();};
-    const sl=document.createElement('button'); fl.style.flex='1';
-    sl.className='act'; sl.textContent='Slab base';
-    sl.title='Set the base parallel to the top';
-    sl.onclick=()=>{const th=Math.max(0.25,b.zt[0]-b.zb[0]);
-      b.zb=b.zt.map(v=>Math.round((v-th)*100)/100);render();list();};
-    r1.append(fl,sl); ed.append(r1);
-    const rr=document.createElement('div'); rr.className='row';
-    const del=document.createElement('button'); del.className='act danger'; del.textContent='Delete';
-    del.onclick=()=>{boxes=boxes.filter(v=>v!==b);selBox=null;render();list();};
-    rr.append(del); ed.append(rr); d.append(ed);
-    B.append(d);
+    // cameras with no recorder still have to be reachable
+    const orphans=cams.filter(c=>!c.nvr||!nvrs.some(n=>n.id===c.nvr));
+    if(orphans.length){
+      const h=mk('div','note','Not connected to a recorder');
+      h.style.padding='4px 12px 2px'; wrap.append(h);
+      orphans.forEach(c=>wrap.append(camRow(c,2)));
+    }
+  }));
+
+  // ---- occluders, nested ----
+  pane.append(section('Occluders',boxes.length,()=>pickOccluder(),'sec-occ',wrap=>{
+    const walk=(pid,depth)=>{
+      childrenOf(pid).forEach(b=>{
+        const kids=childrenOf(b.id);
+        wrap.append(boxRow(b,depth,kids.length));
+        if(kids.length&&isOpen(b.id))walk(b.id,depth+1);
+      });
+    };
+    walk(null,1);
+    // drop target for un-parenting
+    const root=mk('div','trow');
+    root.style.paddingLeft='19px';
+    root.append(mk('span','tw',''),mk('span','nm','— drop here to un-parent —'));
+    root.querySelector('.nm').style.cssText='color:#5A6678;font-family:var(--mono);font-size:9.5px';
+    dropTarget(root,null);
+    wrap.append(root);
+  }));
+
+  // ---- property boundary ----
+  pane.append(row({label:'Property boundary',
+    meta:Math.round(polyArea()).toLocaleString()+' sq ft',
+    selected:selProp, indent:0, onSelect:()=>select('prop')}));
+}
+
+function camRow(c,depth){
+  const S=specOf(c);
+  const r=row({label:`${c.id} · ${c.name}`, meta:S.model,
+    selected:sel===c.id, on:c.on, dot:colC(c), indent:depth,
+    onSelect:()=>select('cam',c.id),
+    onEye:()=>{c.on=!c.on;render();list();}});
+  return r;
+}
+function boxRow(b,depth,kidCount){
+  const tall=(zmax(b)-zmin(b)).toFixed(1);
+  const r=row({label:b.name, meta:tall+' ft'+(b.yaw?` ${Math.round(b.yaw)}°`:''),
+    selected:selBox===b.id, on:b.on, indent:depth,
+    twisty:kidCount?isOpen(b.id):undefined,
+    onTwisty:()=>toggleNode(b.id),
+    onSelect:()=>select('box',b.id),
+    onEye:()=>{b.on=!b.on;splat=null;render();list();}});
+  r.draggable=true;
+  r.addEventListener('dragstart',e=>{e.dataTransfer.setData('text/plain',b.id);e.dataTransfer.effectAllowed='move';});
+  dropTarget(r,b.id);
+  return r;
+}
+// Reparenting by drag. setParent refuses cycles, and the refusal is reported
+// rather than silently ignored.
+function dropTarget(el,parentId){
+  el.addEventListener('dragover',e=>{e.preventDefault();el.classList.add('drop');});
+  el.addEventListener('dragleave',()=>el.classList.remove('drop'));
+  el.addEventListener('drop',e=>{
+    e.preventDefault(); e.stopPropagation(); el.classList.remove('drop');
+    const id=e.dataTransfer.getData('text/plain');
+    const b=boxes.find(v=>v.id===id);
+    if(!b||b.id===parentId)return;
+    if(!setParent(b,parentId)){ toast('That would nest an occluder inside itself'); return; }
+    splat=null; render(); list();
   });
+}
+/* ---------------- add menu ---------------- */
+/*
+   One picker, parameterised by entity kind: search, filter chips, sort.
+   The occluder variant is a preset grid instead, because five presets do not
+   need a search box.
+*/
+function modal(title,build){
+  const scrim=mk('div','scrim');
+  const box=mk('div','picker');
+  const h=mk('h3',null,title);
+  box.append(h);
+  build(box,()=>scrim.remove());
+  scrim.append(box);
+  scrim.onclick=e=>{ if(e.target===scrim)scrim.remove(); };
+  const esc=e=>{ if(e.key==='Escape'){scrim.remove();removeEventListener('keydown',esc);} };
+  addEventListener('keydown',esc);
+  document.body.append(scrim);
+  const inp=box.querySelector('input.t');
+  if(inp)inp.focus();
+  return scrim;
+}
+function emptyCatalogNote(kind){
+  const e=mk('div','pempty');
+  e.innerHTML=`No ${kind} in the catalog.<br>`+
+    `The catalog is fetched from <span style="color:var(--bone)">./catalog/</span>, which cannot be `+
+    `read when this file is opened directly from disk.<br>`+
+    `Import a catalog JSON file to carry on.`;
+  return e;
+}
+const money=v=>v?('$'+v.toLocaleString(undefined,{maximumFractionDigits:0})):'price not set';
+const srcBadge=e=>e.source&&e.source!=='catalog'?` <span class="badge">${e.source}</span>`:'';
+
+// Generic list picker. `cfg.filters` are [label, predicate, defaultOn].
+function listPicker(cfg){
+  modal(cfg.title,(box,close)=>{
+    const bar=mk('div','pbar');
+    const search=mk('input','t'); search.placeholder='Search '+cfg.kind+'…'; search.type='search';
+    bar.append(search);
+    const sortSel=mk('select','t'); sortSel.style.flex='0 0 130px';
+    cfg.sorts.forEach((s,i)=>{const o=document.createElement('option');o.value=i;o.textContent=s.label;sortSel.append(o);});
+    bar.append(sortSel);
+    const state=cfg.filters.map(f=>f[2]);
+    cfg.filters.forEach((f,i)=>{
+      const c=mk('button','chip',f[0]);
+      c.setAttribute('aria-pressed',state[i]?'true':'false');
+      c.onclick=()=>{state[i]=!state[i];c.setAttribute('aria-pressed',state[i]?'true':'false');draw();};
+      bar.append(c);
+    });
+    box.append(bar);
+
+    const list=mk('div','plist'); box.append(list);
+    const foot=mk('div','pfoot');
+    const imp=mk('button','act','Import catalog file…');
+    imp.onclick=()=>importFile(()=>{draw();list0();});
+    const cancel=mk('button','act','Close'); cancel.onclick=close;
+    foot.append(imp,cancel); box.append(foot);
+
+    function draw(){
+      list.textContent='';
+      let rows=cfg.entries();
+      const q=search.value.trim().toLowerCase();
+      if(q)rows=rows.filter(e=>(`${e.brand} ${e.model} ${e.id}`).toLowerCase().includes(q));
+      cfg.filters.forEach((f,i)=>{ if(state[i])rows=rows.filter(f[1]); });
+      const s=cfg.sorts[+sortSel.value]; if(s&&s.cmp)rows=rows.slice().sort(s.cmp);
+      if(!rows.length){ list.append(cfg.entries().length?mk('div','pempty','Nothing matches those filters.'):emptyCatalogNote(cfg.kind)); return; }
+      rows.forEach(e=>{
+        const it=mk('div','pitem');
+        const b=mk('div','b');
+        const t1=mk('div','t1'); t1.innerHTML=`${e.brand} ${e.model}${srcBadge(e)}`;
+        b.append(t1, mk('div','t2',cfg.line(e)));
+        it.append(b);
+        const add=mk('button','act','Add'); add.style.flex='0 0 58px';
+        const go=()=>{ cfg.add(e); close(); render(); list0(); };
+        add.onclick=e2=>{e2.stopPropagation();go();};
+        it.onclick=go;
+        it.append(add);
+        list.append(it);
+      });
+    }
+    search.oninput=draw; sortSel.onchange=draw;
+    draw();
+  });
+}
+// `list` is the sidebar refresh; the picker shadows the name locally.
+const list0=()=>list();
+
+function pickNvr(){
+  listPicker({
+    title:'Add a recorder', kind:'NVRs',
+    entries:()=>CAT.all('nvrs'),
+    filters:[['PoE built in',e=>(e.poePorts||0)>0,false],
+             ['16+ channels',e=>(e.channels||0)>=16,false]],
+    sorts:[{label:'Sort: name',cmp:(a,b)=>(a.brand+a.model).localeCompare(b.brand+b.model)},
+           {label:'Sort: channels',cmp:(a,b)=>(b.channels||0)-(a.channels||0)},
+           {label:'Sort: storage',cmp:(a,b)=>(b.storageGB||0)-(a.storageGB||0)}],
+    line:e=>[`${e.channels||'?'} ch`,
+             e.storageGB?`${(e.storageGB/1000).toFixed(1)} TB fitted`:null,
+             e.maxStreamsMbps?`${e.maxStreamsMbps} Mbps in`:null,
+             e.compat?e.compat.join('/'):null].filter(Boolean).join(' · '),
+    add:e=>{
+      let n=1; while(nvrs.some(v=>v.id==='N'+n))n++;
+      nvrs.push({id:'N'+n,name:`${e.brand} ${e.model}`,catKey:e.key||e.id,on:true,
+        spec:(({source,key,...r})=>r)(e)});
+      select('nvr','N'+n);
+      toast(`${e.model} added`);
+    }
+  });
+}
+function pickCamera(nvr){
+  const tags=new Set();
+  nvrs.forEach(n=>(specOfNvr(n).compat||[]).forEach(t=>tags.add(t)));
+  const fits=e=>!e.compat||!tags.size||e.compat.some(t=>tags.has(t));
+  listPicker({
+    title:nvr?`Add a camera to ${nvr.name}`:'Add a camera', kind:'cameras',
+    entries:()=>CAT.all('cameras'),
+    filters:[['Compatible only',fits,true],
+             ['PoE',e=>e.poe,false],
+             ['Wi-Fi',e=>e.wifi,false],
+             ['PTZ',e=>e.ptz,false],
+             ['4K+',e=>((e.resolution&&e.resolution.w)||0)>=3840,false]],
+    sorts:[{label:'Sort: name',cmp:(a,b)=>(a.brand+a.model).localeCompare(b.brand+b.model)},
+           {label:'Sort: resolution',cmp:(a,b)=>((b.resolution||{}).w||0)-((a.resolution||{}).w||0)},
+           {label:'Sort: identify range',cmp:(a,b)=>rangeOfEntry(b)-rangeOfEntry(a)},
+           {label:'Sort: field of view',cmp:(a,b)=>(b.fovH||0)-(a.fovH||0)}],
+    line:e=>{
+      const r=e.resolution?`${e.resolution.w}×${e.resolution.h}`:'resolution?';
+      const id=rangeOfEntry(e);
+      return [r, `${e.fovH||'?'}° H`,
+        id?`face-ID to ${Math.round(id)} ft`:null,
+        e.irFt?`IR ${e.irFt} ft`:null,
+        e.poe?'PoE':null, e.wifi?'Wi-Fi':null,
+        fits(e)?null:'<span class="incompat">not compatible</span>'].filter(Boolean).join(' · ');
+    },
+    add:e=>{
+      let n=1; while(cams.some(v=>v.id==='C'+n))n++;
+      const c={id:'C'+n,name:`${e.model}`,catKey:e.key||e.id,
+        spec:(({source,key,...r})=>r)(e),
+        nvr:nvr?nvr.id:(nvrs[0]&&nvrs[0].id)||null,
+        x:-14,y:16,z:10.5,a:0,t:15,note:'',on:true};
+      cams.push(c);
+      select('cam',c.id);
+      toast(`${e.model} added — drag it into place in the plan`);
+    }
+  });
+}
+// identify distance for a catalog entry, used for sorting and the summary line
+function rangeOfEntry(e){
+  if(!e.resolution||!e.fovH)return 0;
+  return distForDensity({resW:e.resolution.w,fovH:e.fovH},DORI.identify);
+}
+function pickOccluder(){
+  modal('Add an occluder',(box,close)=>{
+    const g=mk('div','pgrid');
+    Object.entries(OCC_PRESETS).forEach(([k,P])=>{
+      const c=mk('div','pcard');
+      c.append(mk('div','t1',P.name));
+      c.append(mk('div','t2',P.shape==='tree'?'trunk + canopy':P.shape==='cyl'?'cylinder':`${P.w}×${P.d} ft`));
+      c.onclick=()=>{
+        const b=makeOccluder(k,{x:ctrX-5,y:ctrY-5});
+        boxes.push(b); splat=null; close(); select('box',b.id);
+        toast(P.name+' added');
+      };
+      g.append(c);
+    });
+    box.append(g);
+    const foot=mk('div','pfoot');
+    const cancel=mk('button','act','Close'); cancel.onclick=close;
+    foot.append(cancel); box.append(foot);
+  });
+}
+/* ---------------- property editor ---------------- */
+/*
+   Renders whatever the tree has selected. Scene-wide settings live under the
+   Project node, which is where the old right-hand panel's contents went.
+*/
+function fld(lbl,node){
+  const d=mk('div','fld'); d.append(mk('label',null,lbl),node); return d;
+}
+function num(lbl,val,cb,step){
+  const i=mk('input','t'); i.type='number'; i.step=step||0.5; i.value=val;
+  i.oninput=()=>{const v=parseFloat(i.value); if(!Number.isNaN(v)){cb(v);render();}};
+  return fld(lbl,i);
+}
+function text(lbl,val,cb){
+  const i=mk('input','t'); i.value=val;
+  i.oninput=()=>{cb(i.value); autosave(); renderTree();};
+  return fld(lbl,i);
+}
+function pick(lbl,val,options,cb){
+  const s=mk('select','t');
+  options.forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;
+    if(String(v)===String(val))o.selected=true;s.append(o);});
+  s.onchange=()=>{cb(s.value);render();list();};
+  return fld(lbl,s);
+}
+function check(lbl,val,cb){
+  const l=mk('label','layer'); const i=document.createElement('input'); i.type='checkbox'; i.checked=val;
+  i.onchange=()=>{cb(i.checked);render();list();};
+  l.append(i,mk('span',null,lbl)); return l;
+}
+function btnRow(...bs){ const r=mk('div','row'); bs.forEach(b=>r.append(b)); return r; }
+function btn(label,fn,cls){ const b=mk('button','act'+(cls?' '+cls:''),label); b.onclick=fn; return b; }
+const head=t=>{ const e=mk('p','eyebrow',t); return e; };
+const rule=()=>mk('div','divider');
+
+// A field that shows what it inherits until you override it.
+function inheritField(lbl,obj,field,options){
+  const r=inherit(obj,field);
+  const own=obj[field]!==undefined&&obj[field]!==null;
+  const s=mk('select','t');
+  const opt=(v,t)=>{const o=document.createElement('option');o.value=v;o.textContent=t;s.append(o);return o;};
+  opt('','inherit ('+r.v+')');
+  options.forEach(v=>opt(v,String(v)));
+  s.value=own?String(obj[field]):'';
+  if(!own)s.classList.add('inherited');
+  s.onchange=()=>{ obj[field]=s.value===''?null:(isNaN(+s.value)?s.value:+s.value); render(); list(); };
+  return fld(lbl,s);
+}
+
+function renderProps(){
+  const p=$('propspane'); p.textContent='';
+  const k=selKind();
+  if(k==='cam')return propsCam(p,cams.find(c=>c.id===sel));
+  if(k==='nvr')return propsNvr(p,nvrs.find(n=>n.id===selNvr));
+  if(k==='box')return propsBox(p,boxes.find(b=>b.id===selBox));
+  if(k==='prop')return propsBoundary(p);
+  return propsProject(p);
+}
+
+/* ---------- project ---------- */
+function propsProject(p){
+  p.append(head('Project'));
+  p.append(pick('target',opts.tz,[[0,'ground 0 ft'],[3,'torso 3 ft'],[5.5,'head 5.5 ft']],
+    v=>opts.tz=parseFloat(v)));
+  p.append(pick('draw',opts.draw,[['cones','cones (vector)'],['heat','heatmap (pixels)']],v=>opts.draw=v));
+  p.append(pick('lighting',opts.night?'night':'day',[['day','daylight'],['night','night — IR only']],
+    v=>{opts.night=(v==='night');clearSpecCache();splat=null;}));
+  p.append(head('Recording defaults'));
+  p.append(pick('fps',opts.fps,[[5,'5'],[10,'10'],[15,'15'],[20,'20'],[25,'25'],[30,'30']],v=>opts.fps=+v));
+  p.append(pick('quality',opts.quality,[['low','low'],['med','medium'],['high','high']],v=>opts.quality=v));
+  p.append(rule());
+  p.append(head('Fence'));
+  p.append(check('Perimeter fence blocks',fence.on,v=>{fence.on=v;splat=frusta=null;}));
+  p.append(num('height ft',fence.h,v=>{fence.h=v;splat=frusta=null;},0.5));
+  p.append(rule());
+  p.append(head('Presets'));
+  p.append(btnRow(btn('House (measured)',()=>{loadMeasured();select(null);toast('Measured house loaded');})));
+  const pr=Object.keys(PRESETS);
+  p.append(btnRow(...pr.map(k=>btn(PRESET_LABEL[k]||k,()=>applyPreset(k)))));
+  p.append(rule());
+  p.append(head('Project file'));
+  p.append(btnRow(btn('Export…',()=>exportProject()),btn('Import…',()=>importFile(()=>{render();list();}))));
+  p.append(btnRow(btn('New blank project',()=>{
+    if(!confirm('Discard the current project and start again from the default house?'))return;
+    localStorage.removeItem(LS_KEY); loadMeasured(); select(null); toast('New project');
+  },'danger')));
+  p.append(rule());
+  p.append(head('Layout code'));
+  const ta=mk('textarea'); ta.id='code'; ta.spellcheck=false; ta.value=encode(); p.append(ta);
+  p.append(btnRow(
+    btn('Copy',async()=>{ta.select();try{await navigator.clipboard.writeText(ta.value);toast('Copied');}catch(e){toast('Select and copy');}}),
+    btn('Load',()=>{
+      const {C,B,P}=decode(ta.value);
+      if(!C.length&&!B.length&&!P){toast('Nothing recognised');return;}
+      if(C.length)cams=C; if(B.length)boxes=B; if(P)prop=P;
+      migrateScene(); cams.forEach(c=>{ if(!c.nvr&&nvrs[0])c.nvr=nvrs[0].id; });
+      select(null); toast(`Loaded ${C.length} cameras, ${B.length} occluders`);
+    })));
+  const n=mk('p','note'); n.textContent='Geometry only — cameras keep their catalog specs.'; p.append(n);
+}
+
+/* ---------- NVR ---------- */
+function propsNvr(p,n){
+  if(!n)return propsProject(p);
+  const S=specOfNvr(n);
+  const kids=cams.filter(c=>c.nvr===n.id);
+  p.append(head('Recorder'));
+  p.append(text('name',n.name,v=>n.name=v));
+  const s=mk('div','spec');
+  s.innerHTML=`<b>${S.brand||''} ${S.model||''}</b><br>`+
+    `${S.channels||'?'} channels · ${kids.length} used<br>`+
+    (S.storageGB?`${(S.storageGB/1000).toFixed(1)} TB fitted`:'storage not specified')+
+    (S.maxStorageGB?` · up to ${(S.maxStorageGB/1000).toFixed(0)} TB`:'')+'<br>'+
+    (S.maxStreamsMbps?`${S.maxStreamsMbps} Mbps incoming<br>`:'')+
+    (S.checked?`specs checked ${S.checked}`:'');
+  p.append(s);
+  if(S.channels&&kids.length>S.channels){
+    const w=mk('p','note'); w.innerHTML=`<b style="color:var(--warn)">${kids.length} cameras on ${S.channels} channels.</b>`;
+    p.append(w);
+  }
+  (S.links||[]).forEach(l=>{
+    const a=document.createElement('a'); a.className='link'; a.href=l.url; a.target='_blank';
+    a.rel='noopener noreferrer'; a.textContent=l.label+' ↗';
+    const d=mk('div'); d.style.marginTop='5px'; d.append(a); p.append(d);
+  });
+  if(S.notes){ const nn=mk('p','note',S.notes); p.append(nn); }
+  p.append(rule());
+  p.append(num('storage GB',n.storageGB??S.storageGB??0,v=>n.storageGB=v,100));
+  p.append(num('price',n.price||0,v=>n.price=v,10));
+  p.append(head('Overrides for its cameras'));
+  p.append(inheritField('fps',n,'fps',[5,10,15,20,25,30]));
+  p.append(inheritField('quality',n,'quality',['low','med','high']));
+  p.append(rule());
+  p.append(btnRow(btn('Delete recorder',()=>{
+    nvrs=nvrs.filter(v=>v!==n);
+    cams.forEach(c=>{ if(c.nvr===n.id)c.nvr=null; });
+    select(null);
+  },'danger')));
+}
+
+/* ---------- camera ---------- */
+function propsCam(p,c){
+  if(!c)return propsProject(p);
+  const S=specOf(c);
+  p.append(head('Camera'));
+  p.append(text('name',c.name,v=>c.name=v));
+  const idf=identifyFt(S), det=detectFt(S);
+  const s=mk('div','spec');
+  s.innerHTML=`<b>${S.brand} ${S.model}</b><br>`+
+    `${S.resW}×${S.resH} · ${S.fovH}° × ${S.fovV.toFixed(1)}°`+
+    (S.fovVAssumed?' <span class="badge">V assumed</span>':'')+'<br>'+
+    `face-ID to <b>${idf.toFixed(0)} ft</b> · detection to <b>${det.toFixed(0)} ft</b><br>`+
+    (opts.night
+      ? `night: limited by ${S.irFt?`IR ${S.irFt} ft`:''}${S.floodlightFt?` / light ${S.floodlightFt} ft`:''}${!S.irFt&&!S.floodlightFt?'nothing — no coverage':''}`
+      : `IR ${S.irFt||'—'} ft · ${S.poe?'PoE':''}${S.wifi?' Wi-Fi':''}`)+
+    `<br>${bitrateOf(c).toFixed(1)} Mbps at current settings`;
+  p.append(s);
+  const nt=mk('p','note');
+  nt.innerHTML='Ranges are DORI: identify 250 px/m, recognise 125 px/m.';
+  p.append(nt);
+  p.append(rule());
+  p.append(pick('recorder',c.nvr||'',
+    [['','— none —'],...nvrs.map(n=>[n.id,n.name])],v=>c.nvr=v||null));
+  p.append(num('height ft',c.z,v=>c.z=v));
+  p.append(num('down-tilt°',c.t,v=>c.t=v,1));
+  p.append(num('aim °',c.a,v=>c.a=norm(v),1));
+  p.append(num('x',c.x,v=>c.x=v));
+  p.append(num('y',c.y,v=>c.y=v));
+  p.append(num('price',c.price||0,v=>c.price=v,10));
+  p.append(head('Recording'));
+  p.append(inheritField('fps',c,'fps',[5,10,15,20,25,30]));
+  p.append(inheritField('quality',c,'quality',['low','med','high']));
+
+  // PT circuit stays with the camera, as it always has
+  if(S.ptz){
+    p.append(rule());
+    p.append(head(`PT circuit · ${stops(c).length} stops · ${cycle(c)}s`));
+    p.append(num('home s',c.hd||20,v=>c.hd=Math.max(1,v),1));
+    (c.tour||[]).forEach((kf,i)=>{
+      const row2=mk('div','fld');
+      row2.append(mk('label',null,'stop '+(i+1)));
+      const mkn=(val,cb)=>{const n2=mk('input','t');n2.type='number';n2.step=1;n2.value=val;n2.style.flex='1 1 0';
+        n2.oninput=()=>{const v=parseFloat(n2.value); if(!Number.isNaN(v)){cb(v);render();}};return n2;};
+      const del=mk('button','eye','×'); del.title='remove stop';
+      del.onclick=()=>{c.tour.splice(i,1);render();list();};
+      row2.append(mkn(kf.a,v=>kf.a=norm(v)),mkn(kf.t,v=>kf.t=clamp(v,-30,60)),mkn(kf.d,v=>kf.d=Math.max(1,v)),del);
+      row2.title='aim° / tilt° / dwell s';
+      p.append(row2);
+    });
+    p.append(btnRow(
+      btn('+ Stop here',()=>{
+        c.tour=c.tour||[];
+        if(c.tour.length>=3){toast('3 extra stops is the cap');return;}
+        const last=c.tour.length?c.tour[c.tour.length-1].a:c.a;
+        c.tour.push({a:norm(last+60),t:c.t||15,d:8}); render(); list();
+      }),
+      btn('Clear',()=>{c.tour=[];render();list();})));
+  }
+  const lo=lowVis(c);
+  if(lo){ const w=mk('p','note'); w.innerHTML=`<b style="color:var(--warn)">${lo}</b>`; p.append(w); }
+  p.append(rule());
+  p.append(btnRow(btn('Delete camera',()=>{cams=cams.filter(v=>v!==c);select(null);},'danger')));
+}
+
+/* ---------- occluder ---------- */
+function propsBox(p,b){
+  if(!b)return propsProject(p);
+  p.append(head('Occluder'));
+  p.append(text('name',b.name,v=>b.name=v));
+  p.append(pick('parent',b.parent||'',
+    [['','— none (world) —'],...boxes.filter(o=>o!==b&&!wouldCycle(o,b.id)).map(o=>[o.id,o.name])],
+    v=>{ if(!setParent(b,v||null))toast('That would nest an occluder inside itself'); splat=null; }));
+  p.append(num('yaw °',b.yaw||0,v=>{b.yaw=v;splat=null;},5));
+  p.append(rule());
+  p.append(num('x0',b.x0,v=>{b.x0=Math.min(v,b.x1-0.25);splat=null;}));
+  p.append(num('y0',b.y0,v=>{b.y0=Math.min(v,b.y1-0.25);splat=null;}));
+  p.append(num('x1',b.x1,v=>{b.x1=Math.max(v,b.x0+0.25);splat=null;}));
+  p.append(num('y1',b.y1,v=>{b.y1=Math.max(v,b.y0+0.25);splat=null;}));
+  if(b.shape==='cyl'||b.shape==='tree'){
+    p.append(num('radius ft',b.r||0.5,v=>{b.r=Math.max(0.1,v);splat=null;},0.25));
+    if(b.shape==='tree'){
+      p.append(num('canopy r',b.canopyR||6,v=>{b.canopyR=Math.max(0.5,v);splat=null;},0.5));
+      p.append(num('canopy h',b.canopyH||8,v=>{b.canopyH=Math.max(0.5,v);splat=null;},0.5));
+    }
+  }
+  p.append(rule());
+  p.append(head('Heights'));
+  const eLbl={N:'N',E:'E',S:'S',W:'W'};
+  [['zt','top'],['zb','base']].forEach(([key,word])=>{
+    EDGES.forEach(edg=>{
+      const cur=(b[key][edg.c[0]]+b[key][edg.c[1]])/2;
+      p.append(num(word+' '+eLbl[edg.k],Math.round(cur*100)/100,v=>{
+        edg.c.forEach(i=>b[key][i]=v);
+        if(key==='zt')b.zt=b.zt.map((z,i)=>Math.max(z,b.zb[i]+.15));
+        else b.zb=b.zb.map((z,i)=>Math.min(z,b.zt[i]-.15));
+        splat=null;
+      },0.25));
+    });
+  });
+  p.append(btnRow(
+    btn('Level',()=>{const m=Math.max(...b.zt),n=Math.min(...b.zb);b.zt=[m,m,m,m];b.zb=[n,n,n,n];splat=null;render();list();}),
+    btn('Slab base',()=>{const th=Math.max(0.25,b.zt[0]-b.zb[0]);
+      b.zb=b.zt.map(v=>Math.round((v-th)*100)/100);splat=null;render();list();})));
+  const kids=childrenOf(b.id);
+  if(kids.length){
+    const n2=mk('p','note',`${kids.length} child occluder${kids.length>1?'s':''} move with this one.`);
+    p.append(n2);
+  }
+  p.append(rule());
+  p.append(btnRow(btn('Delete',()=>{
+    childrenOf(b.id).forEach(k=>k.parent=b.parent||null);   // don't orphan the subtree
+    boxes=boxes.filter(v=>v!==b); splat=null; select(null);
+  },'danger')));
+}
+
+/* ---------- property boundary ---------- */
+function propsBoundary(p){
+  p.append(head('Property boundary'));
+  const s=mk('div','spec');
+  s.innerHTML=`${prop.length} vertices · <b>${Math.round(polyArea()).toLocaleString()} sq ft</b><br>`+
+    `drag a vertex · + adds one · shift-click removes`;
+  p.append(s);
+  p.append(rule());
+  const i=mk('input','t'); i.type='number'; i.step=100; i.value=Math.round(polyArea());
+  p.append(fld('lot sq ft',i));
+  p.append(btnRow(btn('Scale to that area',()=>{
+    const target=parseFloat(i.value), cur=polyArea();
+    if(!(target>0)||!(cur>0))return;
+    const k=Math.sqrt(target/cur);
+    const cx0=prop.reduce((a,v)=>a+v[0],0)/prop.length;
+    const cy0=prop.reduce((a,v)=>a+v[1],0)/prop.length;
+    prop=prop.map(([x,y])=>[Math.round((cx0+(x-cx0)*k)*10)/10,Math.round((cy0+(y-cy0)*k)*10)/10]);
+    render();list();toast('Scaled to '+Math.round(polyArea()).toLocaleString()+' sq ft');
+  })));
+  p.append(btnRow(
+    btn('Measured lot',()=>{const {P}=decodeRaw(MEASURED); if(P){prop=P;splat=null;render();list();}}),
+    btn('Square',()=>{prop=DEF_PROP();splat=null;render();list();})));
+  p.append(btnRow(btn('Fit to structures',()=>{
+    const on=boxes.filter(b=>b.on);
+    if(!on.length)return;
+    const m=8;
+    const x0=Math.min(...on.map(b=>b.x0))-m, x1=Math.max(...on.map(b=>b.x1))+m;
+    const y0=Math.min(...on.map(b=>b.y0))-m, y1=Math.max(...on.map(b=>b.y1))+m;
+    prop=[[x0,y0],[x1,y0],[x1,y1],[x0,y1]].map(([a,c])=>[Math.round(a*10)/10,Math.round(c*10)/10]);
+    render();list();
+  })));
+}
+/* ---------------- status bar and layer strip ---------------- */
+const pct=(a,b)=>b?Math.round(100*a/b)+'%':'—';
+function fmtDays(d){
+  if(!isFinite(d)||d<=0)return '—';
+  if(d<1)return (d*24).toFixed(1)+' h';
+  if(d<90)return d.toFixed(1)+' d';
+  return (d/30.4).toFixed(1)+' mo';
+}
+// `stale` dims the figures while the full-resolution pass is still running,
+// so a coarse number is never mistaken for the final one.
+function paintStats(r,stale){
+  const bar=$('status'); if(!bar)return;
+  const t=totals();
+  bar.classList.toggle('stale',!!stale);
+  const cells=[];
+  cells.push(['', `<b>${t.nvrs}</b> NVR${t.nvrs===1?'':'s'} · <b>${t.cams}</b> cam${t.cams===1?'':'s'}`]);
+  cells.push([t.cams>t.chans?'warn':'', `<b>${t.cams}/${t.chans||'?'}</b> channels`]);
+  cells.push(['', priceKnown()?`<b>$${Math.round(t.cost).toLocaleString()}</b>`:'price <b>not set</b>']);
+  if(r&&r.nc){
+    cells.push(['', `near buildings <b>${pct(r.cc,r.nc)}</b> · face-ID <b>${pct(r.ci,r.nc)}</b>`]);
+    cells.push(['', `lot <b>${pct(r.ac,r.n)}</b>`]);
+    if(r.anyTour)cells.push(['', `watched <b>${pct(r.dut,r.nc)}</b> of each PT cycle`]);
+  } else if(r){
+    cells.push(['', 'boundary encloses no open ground']);
+  }
+  cells.push(['', `<b>${(t.storageGB/1000).toFixed(1)}</b> TB · <b>${t.mbps.toFixed(1)}</b> Mbps`]);
+  cells.push(['', `records <b>${fmtDays(t.days)}</b>`]);
+  if(opts.night)cells.push(['warn','<b>night</b>']);
+  bar.innerHTML=cells.map(([c,h])=>`<span class="cell ${c}">${h}</span>`).join('');
+  bar.title='Recording duration assumes continuous recording at the current fps and quality.';
+}
+
+// The handful of toggles worth keeping one click away from the stage.
+function renderLayers(){
+  const el=$('layers'); if(!el)return;
+  el.textContent='';
+  const t=(label,on,fn,title)=>{
+    const b=document.createElement('button');
+    b.textContent=label; b.setAttribute('aria-pressed',on?'true':'false');
+    if(title)b.title=title;
+    b.onclick=()=>{fn();render();list();};
+    el.append(b);
+  };
+  t('OCCL',opts.occ,()=>{opts.occ=!opts.occ;splat=null;},'Occlusion on/off (O)');
+  t('FACE-ID',opts.id,()=>opts.id=!opts.id,'Shade the face-ID range');
+  t('CIRCUIT',opts.tour,()=>opts.tour=!opts.tour,'Count PT circuit coverage');
+  t('FRUSTA',opts.frus,()=>opts.frus=!opts.frus,'Frustum solids in 3D (V)');
+  t('SPLAT',opts.splat,()=>opts.splat=!opts.splat,'Splatter surfaces in 3D (S)');
+  t('GRID',opts.grid,()=>opts.grid=!opts.grid,'5 ft grid (G)');
+  t('NIGHT',opts.night,()=>{opts.night=!opts.night;clearSpecCache();splat=null;},'Limit range to IR / floodlight (N)');
+}
+
+/* ---------------- sidebar resizing ---------------- */
+function initSidebar(){
+  const side=$('side');
+  const px=+localStorage.getItem('sightline.sidebar')||320;
+  document.documentElement.style.setProperty('--sidebar',px+'px');
+  const savedH=localStorage.getItem('sightline.treeh');
+  if(savedH)side.style.setProperty('--treeh',savedH);
+
+  let drag=null;
+  $('grip').addEventListener('pointerdown',e=>{
+    drag={x:e.clientX,w:side.getBoundingClientRect().width};
+    $('grip').setPointerCapture(e.pointerId); e.preventDefault();
+  });
+  $('grip').addEventListener('pointermove',e=>{
+    if(!drag)return;
+    const w=clamp(drag.w+(e.clientX-drag.x),210,620);
+    document.documentElement.style.setProperty('--sidebar',w+'px');
+    render();
+  });
+  ['pointerup','pointercancel'].forEach(v=>$('grip').addEventListener(v,()=>{
+    if(!drag)return;
+    drag=null;
+    localStorage.setItem('sightline.sidebar',parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar')));
+    render();
+  }));
+
+  let vdrag=null;
+  $('vgrip').addEventListener('pointerdown',e=>{
+    vdrag={y:e.clientY,h:$('treepane').getBoundingClientRect().height};
+    $('vgrip').setPointerCapture(e.pointerId); e.preventDefault();
+  });
+  $('vgrip').addEventListener('pointermove',e=>{
+    if(!vdrag)return;
+    const total=side.getBoundingClientRect().height;
+    const h=clamp(vdrag.h+(e.clientY-vdrag.y),80,total-120);
+    side.style.setProperty('--treeh',(100*h/total).toFixed(1)+'%');
+  });
+  ['pointerup','pointercancel'].forEach(v=>$('vgrip').addEventListener(v,()=>{
+    if(!vdrag)return;
+    vdrag=null;
+    localStorage.setItem('sightline.treeh',side.style.getPropertyValue('--treeh'));
+  }));
+}
+/* ---------------- sidebar refresh ---------------- */
+// list() has meant "redraw the side panel" since the first version, and every
+// interaction path still calls it. It still means that; there is simply more
+// panel now.
+function list(){
+  renderTree();
+  renderProps();
+  renderLayers();
 }
 // how much of the nominal arc is actually usable
 function lowVis(c){
-  const L=lensOf(c), tz=parseFloat($('tz').value);
+  const S=specOf(c), tz=targetZ();
+  const far=detectFt(S);
+  if(!(far>0))return 'no usable range in these lighting conditions';
   let free=0,n=0;
-  for(let o=-L.f/2;o<=L.f/2;o+=3){
+  for(let o=-S.fovH/2;o<=S.fovH/2;o+=3){
     n++;
     const aa=rad(c.a+o);
     let any=false;
-    for(let d=6;d<=L.r;d+=3){
+    for(let d=6;d<=far;d+=3){
       if(quality(c,c.x+d*Math.cos(aa),c.y+d*Math.sin(aa),tz)){any=true;break;}
     }
     if(any)free++;
   }
-  const pct=Math.round(100*free/n);
-  return pct<80?`only ${pct}% of its arc reaches anything`:'';
+  const p=Math.round(100*free/n);
+  return p<80?`only ${p}% of its arc reaches anything`:'';
 }
-
 /* ---------------- code ---------------- */
 function encode(){
   const L=['PLAN v3 · feet · x=east y=south · a=bearing (0=east,90=south) · z=mount height · t=down-tilt'];
@@ -2440,9 +3736,11 @@ function decodeRaw(s){
 }
 
 const decode=decodeRaw;
-/* ---------------- presets & buttons ---------------- */
-
-
+/* ---------------- presets ---------------- */
+// Camera positions only. Swapping a preset keeps the structures and the
+// recorder, and now also keeps whatever catalog entry each camera came from -
+// a preset is a layout, not a shopping list.
+const PRESET_LABEL={yours:'7 PTZ',duo2:'2 Duo + 4 E1',duo4:'4 Duo mid-wall'};
 const PRESETS={
  yours:[['ptz',-1.2,11.3,8.5,185],['ptz',-0.4,1.5,10.5,143],['ptz',25.7,2.2,8,329],
         ['ptz',26,23.5,10.5,329],['ptz',1.7,25,10.5,48],['ptz',3.4,-0.6,11,316],['ptz',22.2,-0.8,11,224]],
@@ -2450,39 +3748,14 @@ const PRESETS={
         ['ptz',33.5,3.5,8,312],['ptz',-1.5,-1.5,10.5,135],['ptz',26.5,26.5,10.5,309]],
  duo4 :[['duo',12.5,-1,11,270],['duo',26,12.5,11,0],['duo',12.5,26,11,90],['duo',-1,12.5,11,180]]
 };
-document.querySelectorAll('[data-preset]').forEach(b=>b.onclick=()=>{
-  if(b.dataset.preset==='measured'){
-    loadMeasured(); sel=selBox=null; splat=null; render(); list();
-    toast('Measured house loaded'); return;
-  }
-  cams=PRESETS[b.dataset.preset].map(([lens,x,y,z,a],i)=>
-    ({id:'C'+(i+1),lens,x,y,z,a,t:15,name:LENS[lens].label,note:'',on:true}));
-  sel=null;render();list();toast('Cameras swapped — structures kept');
-});
-$('bFit').onclick=()=>resetView();
-$('bReset').onclick=()=>{loadMeasured();sel=selBox=null;splat=null;render();list();toast('Reset to measured house');};
-$('bAddCam').onclick=()=>{
-  let n=1; while(cams.some(c=>c.id==='C'+n))n++;
-  const c={id:'C'+n,lens:'ptz',x:-14,y:16,z:10.5,a:0,t:15,name:'New camera',note:'',on:true};
-  cams.push(c); sel=c.id; render(); list();
-};
-$('bAddBox').onclick=()=>{
-  let n=1; while(boxes.some(b=>b.id==='B'+n))n++;
-  const b={id:'B'+n,name:'New occluder',x0:-14,y0:-10,x1:-6,y1:-2,zb:[0,0,0,0],zt:[8,8,8,8],on:true};
-  boxes.push(b); selBox=b.id; sel=null; render(); list();
-};
-['tOcc','tId','tGrid','tz','rmode','tSplat','tTour','tFrus','tFence','fh'].forEach(i=>$(i).onchange=()=>{render();list();});
-$('tFence').onchange=()=>{fence.on=$('tFence').checked;splat=frusta=null;render();list();};
-$('fh').oninput=()=>{const v=parseFloat($('fh').value); if(!Number.isNaN(v)){fence.h=v;splat=frusta=null;render();list();}};
-$('bCopy').onclick=async()=>{const t=$('code');t.select();
-  try{await navigator.clipboard.writeText(t.value);toast('Copied');}catch(e){toast('Select and copy');}};
-$('bLoad').onclick=()=>{
-  const {C,B,P}=decode($('code').value);
-  if(!C.length&&!B.length&&!P){toast('Nothing recognised');return;}
-  if(C.length)cams=C; if(B.length)boxes=B; if(P)prop=P;
-  sel=selBox=null;selProp=false;splat=null;render();list();
-  toast(`Loaded ${C.length} cameras, ${B.length} occluders${P?', boundary':''}`);
-};
+function applyPreset(k){
+  const home=nvrs[0]?nvrs[0].id:null;
+  cams=PRESETS[k].map(([lens,x,y,z,a],i)=>migrateCam(
+    {id:'C'+(i+1),lens,x,y,z,a,t:15,name:LEGACY_SPEC[LEGACY_KEY[lens]].model,
+     note:'',on:true,nvr:home}));
+  select(null);
+  toast('Cameras swapped — structures kept');
+}
 /* ---------------- PT circuit animation ---------------- */
 const MOVE=1.5;                       // seconds to swing between stops
 let speed=4;                          // playback multiplier
@@ -2556,17 +3829,39 @@ addEventListener('keydown',ev=>{
   else if(k==='b'){const {P}=decodeRaw(MEASURED); if(P){prop=P;splat=null;render();list();
     toast('Boundary restored — '+Math.round(polyArea()).toLocaleString()+' sq ft');}}
   else if(k==='e'){selProp=!selProp;sel=null;selBox=null;render();list();}
-  else if(k==='s'){const c=$('tSplat');c.checked=!c.checked;render();list();}
-  else if(k==='v'){const c=$('tFrus');c.checked=!c.checked;render();list();}
-  else if(k==='o'){const c=$('tOcc');c.checked=!c.checked;splat=null;render();list();}
-  else if(k==='g'){const c=$('tGrid');c.checked=!c.checked;render();}
+  else if(k==='s'){opts.splat=!opts.splat;render();list();}
+  else if(k==='v'){opts.frus=!opts.frus;render();list();}
+  else if(k==='o'){opts.occ=!opts.occ;splat=null;render();list();}
+  else if(k==='g'){opts.grid=!opts.grid;render();}
+  else if(k==='n'){opts.night=!opts.night;clearSpecCache();splat=null;render();list();
+    toast(opts.night?'Night: range limited by IR and floodlight':'Day');}
   else if(k==='escape'){sel=null;selBox=null;selProp=false;render();list();}
   else return;
   ev.preventDefault();
 });
 addEventListener('resize',()=>render());
-loadMeasured();
-render(); list();
+
+/* ---------------- boot ---------------- */
+// Order matters. The project's own catalog snapshot is seeded first so every
+// camera resolves to a spec before anything asks for coverage; the network
+// catalog is enrichment that arrives later, or never.
+function boot(){
+  initSidebar();
+  restoreUserCatalog();
+  if(!restore()){
+    // No saved project: the default house, its porches and deck, a square
+    // boundary and one recorder.
+    loadMeasured();
+  } else {
+    CAT.seedFromProject(projectSnapshot());
+  }
+  render(); list();
+  CAT.fetchCatalog().then(()=>{
+    clearSpecCache();
+    render(); list();
+  });
+}
+boot();
 </script>
 </body>
 </html>

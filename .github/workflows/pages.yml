@@ -36,12 +36,30 @@ jobs:
             exit 1
           fi
 
-      # The app is a single self-contained file with no build step. Stage only
-      # what should be public rather than uploading the whole repo.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # index.html is generated from src/. Building here rather than trusting
+      # the committed copy means a stale commit cannot ship.
+      - name: Build
+        run: node scripts/build.js
+
+      - name: Fail if the committed index.html is stale
+        run: |
+          if ! git diff --quiet -- index.html; then
+            echo "::error::index.html does not match a build of src/. Run 'node scripts/build.js' and commit."
+            git diff --stat -- index.html
+            exit 1
+          fi
+
+      # The app itself is one self-contained file. The equipment catalog is
+      # fetched at runtime, so it has to be published alongside it.
       - name: Stage site
         run: |
           mkdir _site
           cp index.html _site/
+          cp -r catalog _site/catalog
           cp README.md CHANGELOG.md _site/
           touch _site/.nojekyll
 

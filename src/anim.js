@@ -71,14 +71,36 @@ addEventListener('keydown',ev=>{
   else if(k==='b'){const {P}=decodeRaw(MEASURED); if(P){prop=P;splat=null;render();list();
     toast('Boundary restored — '+Math.round(polyArea()).toLocaleString()+' sq ft');}}
   else if(k==='e'){selProp=!selProp;sel=null;selBox=null;render();list();}
-  else if(k==='s'){const c=$('tSplat');c.checked=!c.checked;render();list();}
-  else if(k==='v'){const c=$('tFrus');c.checked=!c.checked;render();list();}
-  else if(k==='o'){const c=$('tOcc');c.checked=!c.checked;splat=null;render();list();}
-  else if(k==='g'){const c=$('tGrid');c.checked=!c.checked;render();}
+  else if(k==='s'){opts.splat=!opts.splat;render();list();}
+  else if(k==='v'){opts.frus=!opts.frus;render();list();}
+  else if(k==='o'){opts.occ=!opts.occ;splat=null;render();list();}
+  else if(k==='g'){opts.grid=!opts.grid;render();}
+  else if(k==='n'){opts.night=!opts.night;clearSpecCache();splat=null;render();list();
+    toast(opts.night?'Night: range limited by IR and floodlight':'Day');}
   else if(k==='escape'){sel=null;selBox=null;selProp=false;render();list();}
   else return;
   ev.preventDefault();
 });
 addEventListener('resize',()=>render());
-loadMeasured();
-render(); list();
+
+/* ---------------- boot ---------------- */
+// Order matters. The project's own catalog snapshot is seeded first so every
+// camera resolves to a spec before anything asks for coverage; the network
+// catalog is enrichment that arrives later, or never.
+function boot(){
+  initSidebar();
+  restoreUserCatalog();
+  if(!restore()){
+    // No saved project: the default house, its porches and deck, a square
+    // boundary and one recorder.
+    loadMeasured();
+  } else {
+    CAT.seedFromProject(projectSnapshot());
+  }
+  render(); list();
+  CAT.fetchCatalog().then(()=>{
+    clearSpecCache();
+    render(); list();
+  });
+}
+boot();

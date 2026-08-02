@@ -1,5 +1,113 @@
 # Changelog
 
+## 0.3.0
+
+Equipment catalog, a scene tree, occluder transforms and project persistence.
+The app stops being a geometry sketchpad with two hardcoded lenses and starts
+being a planner for real equipment.
+
+### Source layout
+Source moved to `src/*.js`, built into `index.html` by `scripts/build.js`. The
+split was mechanical and verified byte-identical against the pre-split file, so
+the refactor provably changed no behaviour. The published artifact is still one
+self-contained file; only the source is navigable now.
+
+### Equipment catalog
+NVRs and cameras come from `catalog/*.json`, fetched at runtime, merged with a
+copy embedded in every saved project and with any file the user imports.
+
+Entries merge by id. Byte-identical duplicates collapse; where an id collides
+and any stat differs, **both are kept as variants** tagged by source. Nothing
+is ever overwritten, so reopening an old plan cannot silently move its coverage
+percentages or its cost.
+
+The trade-off, taken deliberately: the catalog is fetched, so it does not work
+from `file://`. A saved project still opens anywhere because it carries its own
+copy. Only a brand-new project opened from disk sees an empty picker, and it
+says why.
+
+Seed catalog is 4 NVRs and 9 cameras transcribed from manufacturer pages, each
+dated. Prices are absent - none of the sources were authoritative and they move
+constantly, so price is a per-unit field you fill in.
+
+### Range is now derived
+`LENS`, with its hardcoded `r:40` / `r:65` and flat 20 ft face-ID line, is gone.
+Range comes from pixel density and EN 62676-4 (DORI): face-ID at identify
+(250 px/m), detection at recognise (125 px/m).
+
+Density is angular, not rectilinear:
+
+    pxPerM(d) = resW / (fovH_radians * d)
+
+The textbook form divides by `tan(fovH/2)`, which at the Duo's 189 degrees
+diverges and returns a range under a foot. These are barrel-distorted wide
+lenses rendered cylindrically - the projection the renderer already uses - so
+angular density is the form that agrees with the picture.
+
+Measured on the house: near-building coverage 81 percent, unchanged, but
+face-ID rises 34 to 72 percent because identify now reaches 33 ft rather than a
+flat 20, and whole-lot coverage 39 to 48 percent.
+
+A day/night toggle clamps range to `max(irFt, floodlightFt)` at night, which is
+what makes the IR and floodlight figures mean something. A camera with neither
+contributes no coverage at night at all.
+
+### Occluder transforms
+Occluders carry `parent` and `yaw`, composed through `worldM()`. Children move
+with their parent; the tree reparents by drag and refuses cycles.
+
+Intersection did **not** gain oriented-box maths. The ray is transformed into
+the occluder's local frame and the original slab test runs there unchanged, so
+the tested code survives verbatim. With yaw 0 and no parent the matrix is
+exactly the identity - every pre-transform scene reads as world coordinates.
+
+### New primitives
+A real cylinder, plus an ellipsoid canopy for the tree preset. Presets:
+building, sloped roof, column/post, fence run, tree.
+
+### The mirrored-pair hazard is gone
+`MESH.makeCaster` used to mirror `blocked()` by hand, and the developer guide
+warned they had to be changed in lockstep. They now both call `hitsOccluder()`
+in `shapes.js`; only loop policy differs. The coverage worker is held to the
+same rule by being assembled from the source text of the live functions, so it
+cannot be running different logic.
+
+### UI
+The 340px right panel is gone. A resizable left sidebar holds a collapsible
+scene tree (NVRs owning cameras, occluders nesting) above a property editor for
+the current selection. Scene-wide settings live under the Project node; the
+frequently-flipped layers moved to a strip over the stage. A status bar carries
+NVR and camera counts, channels used, cost, coverage static and swept, storage
+and estimated recording days.
+
+fps and quality resolve camera -> NVR -> project, with inherited values shown
+greyed. PT circuit editing stays with the camera.
+
+### Persistence
+Autosave to localStorage, plus export/import of a project document that carries
+the scene and its catalog snapshot. The `PLAN v3` paste format is unchanged.
+
+### Coverage recompute
+A coarse pass runs immediately; the full pass runs in a worker once interaction
+settles, with the previous figures dimmed while it is in flight.
+
+### Verification
+`tests/verify.py` — 27 Playwright checks, all passing. The two that matter
+most: `blocked()` and `makeCaster` agree on every sampled ray across box,
+cylinder and ellipsoid, and the worker reproduces the main-thread sweep exactly.
+
+### Fixes found while building this
+- Catalog dedup never matched. `JSON.stringify(e, keys)` applies its replacer
+  array to nested objects too, so `{resolution:{w,h}}` lost `w` and `h`; and
+  the stored entry's own `key` field leaked into its fingerprint. Every
+  re-import created a duplicate.
+- The 3D view rendered nothing after the layout rewrite. `#view3d` is the SVG
+  handle overlay and must sit above the GL canvas *and* be transparent; it had
+  been given z-index 3 and an opaque sky gradient, painting over the whole
+  render.
+- The mesh cache key did not include `yaw`, `parent`, `shape` or the cylinder
+  radii, so rotating an occluder left a stale bake.
+
 ## 0.1.0
 
 First working version.

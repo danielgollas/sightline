@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "note": "Specs transcribed from manufacturer pages and datasheets on the date in each entry's 'checked' field. Prices are deliberately absent: they move constantly and none of the sources were authoritative. Set a price per unit in the project instead. Fields that could not be verified are omitted rather than guessed.",
+  "nvrs": [
+    {
+      "id": "reolink-rln8-410",
+      "brand": "Reolink",
+      "model": "RLN8-410",
+      "channels": 8,
+      "storageGB": 2000,
+      "maxStorageGB": 12000,
+      "poePorts": 8,
+      "compat": ["reolink"],
+      "links": [
+        { "label": "Reolink", "url": "https://reolink.com/product/rln8-410/" }
+      ],
+      "checked": "2026-08-02"
+    },
+    {
+      "id": "reolink-rln16-410",
+      "brand": "Reolink",
+      "model": "RLN16-410",
+      "channels": 16,
+      "storageGB": 4000,
+      "maxStorageGB": 16000,
+      "poePorts": 16,
+      "compat": ["reolink"],
+      "notes": "Hardware version N6MB01 supports up to 24 cameras total: 16 PoE or plug-in Wi-Fi plus 8 battery Wi-Fi. The channel figure here is the PoE count.",
+      "links": [
+        { "label": "Reolink", "url": "https://reolink.com/product/rln16-410/" }
+      ],
+      "checked": "2026-08-02"
+    },
+    {
+      "id": "amcrest-nv4108e-hs",
+      "brand": "Amcrest",
+      "model": "NV4108E-HS",
+      "channels": 8,
+      "storageGB": 1000,
+      "maxStorageGB": 6000,
+      "maxStreamsMbps": 80,
+      "poePorts": 8,
+      "compat": ["amcrest", "onvif", "dahua"],
+      "notes": "80 Mbps incoming bandwidth records about 7 cameras at 4K using H.264.",
+      "links": [
+        { "label": "Amcrest", "url": "https://amcrest.com/amcrest-nv4108e-hs-4k-8ch-poe-nvr-1080p-3mp-4mp-5mp-6mp-8mp-4k-network-video-recorder-supports-up-to-8-x-8mp-4k-ip-cameras-8-channel-power-over-ethernet-pre-installed-1tb-hard-drive-nv4108e-1tb.html" },
+        { "label": "Datasheet (PDF)", "url": "https://s3.amazonaws.com/amcrest-files/Documentation/NV4108E-HS+Technical+Specifications.pdf" }
+      ],
+      "checked": "2026-08-02"
+    },
+    {
+      "id": "amcrest-nv4108e-a2",
+      "brand": "Amcrest",
+      "model": "NV4108E-A2",
+      "channels": 8,
+      "storageGB": 2000,
+      "maxStorageGB": 10000,
+      "maxStreamsMbps": 80,
+      "poePorts": 8,
+      "compat": ["amcrest", "onvif", "dahua"],
+      "links": [
+        { "label": "Amcrest", "url": "https://amcrest.com/4k-8ch-poe-nvr-nv4108e-2tb.html" }
+      ],
+      "checked": "2026-08-02"
+    }
+  ]
+}

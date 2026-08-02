@@ -5,7 +5,7 @@ function drawPlan(){
   svg.setAttribute('width',W); svg.setAttribute('height',H);
   svg.textContent='';
   const g=el('g'); svg.append(g);
-  if($('tGrid').checked){
+  if(gridOn()){
     const a=Math.floor(sx(0)/5)*5,bb=Math.ceil(sx(W)/5)*5;
     const c0=Math.floor(sy(0)/5)*5,d0=Math.ceil(sy(H)/5)*5;
     for(let v=a;v<=bb;v+=5)g.append(el('line',{class:'gridline',x1:wx(v),y1:0,x2:wx(v),y2:H}));
@@ -49,14 +49,14 @@ function drawPlan(){
     }
   }
   // coverage cones
-  if($('rmode').value==='cones'){
-    const tz=parseFloat($('tz').value);
+  if(drawMode()==='cones'){
+    const tz=targetZ();
     const astep=coarse?3:1.25, dstep=coarse?1.6:0.8;
     cams.forEach(c=>{
       if(!c.on)return;
       const k=colC(c), dim=(sel&&sel!==c.id)?.13:1;
       const gc=el('g'); gc.style.opacity=dim; gc.style.pointerEvents='none';
-      if($('tTour').checked&&(c.lens||'ptz')==='ptz'&&c.tour&&c.tour.length){
+      if(tourOn()&&(c.lens||'ptz')==='ptz'&&c.tour&&c.tour.length){
         const save={a:c.a,t:c.t};
         c.tour.forEach(kf=>{
           c.a=kf.a; c.t=kf.t;
@@ -69,7 +69,7 @@ function drawPlan(){
       conePaths(c,tz,1,astep,dstep).forEach(d=>
         gc.append(el('path',{d,fill:k,'fill-opacity':.14,stroke:k,
           'stroke-opacity':.5,'stroke-width':.9,'stroke-linejoin':'round'})));
-      if($('tId').checked)
+      if(idOn())
         conePaths(c,tz,2,astep,dstep).forEach(d=>
           gc.append(el('path',{d,fill:k,'fill-opacity':.24,stroke:'none'})));
       g.append(gc);
