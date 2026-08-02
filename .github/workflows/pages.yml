@@ -1,0 +1,65 @@
+name: Publish to GitHub Pages
+
+# Fires when a release is published. GitHub runs release-triggered workflows from
+# the default branch, so this file must live on main to have any effect.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race; let a newer release win.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
+          fetch-depth: 0
+
+      # A release can be cut from any branch. Publishing one that isn't on main
+      # would silently ship unreviewed work to the public site.
+      - name: Verify the tag is an ancestor of main
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "::error::$(git rev-parse HEAD) is not on main; refusing to publish."
+            exit 1
+          fi
+
+      # The app is a single self-contained file with no build step. Stage only
+      # what should be public rather than uploading the whole repo.
+      - name: Stage site
+        run: |
+          mkdir _site
+          cp index.html _site/
+          cp README.md CHANGELOG.md _site/
+          touch _site/.nojekyll
+
+      # Pages is already enabled on the repo with build_type=workflow. Enabling
+      # it from here (enablement: true) fails: GITHUB_TOKEN cannot create the
+      # Pages site.
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
