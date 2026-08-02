@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera coverage planner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#0F1319;--ink2:#161C25;--line:#232C38;--line2:#2E3947;
+  --bone:#E9E5DB;--dim:#8A9099;--warn:#E08A82;
+  --sans:"Space Grotesk","Helvetica Neue",Arial,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--ink);color:var(--bone);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+.wrap{display:grid;grid-template-columns:minmax(0,1fr) 340px;height:100vh}
+.stage{position:relative;min-width:0;background:radial-gradient(ellipse at 45% 40%,#151B24 0%,var(--ink) 72%);overflow:hidden}
+.stage.split #cov,.stage.split #plan,.stage.split #view3d{width:50%}
+.stage.split #povgrid{left:50%;width:50%;padding:52px 10px 10px;border-left:1px solid var(--line)}
+#cov,#plan,#view3d,#gl3d{position:absolute;inset:0;width:100%;height:100%}
+#gl3d{z-index:3}
+.stage.split #gl3d{width:50%}
+.povcell canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.povcell svg{position:absolute;inset:0;z-index:2}
+#povgrid{position:absolute;inset:0;z-index:4;display:none;grid-template-columns:1fr 1fr;
+  gap:8px;padding:52px 12px 12px;overflow-y:auto;align-content:start;grid-auto-rows:min-content}
+.povcell{position:relative;background:#0B0F14;border:1px solid var(--line);border-radius:3px;
+  overflow:hidden;cursor:zoom-in;aspect-ratio:16/10;height:auto;align-self:start}
+.povcell.wide{aspect-ratio:32/10;grid-column:span 2}
+#povgrid.one .povcell.wide{grid-column:span 1}
+.povcell svg{width:100%;height:100%;display:block}
+.dpad{position:absolute;right:8px;bottom:8px;display:grid;
+  grid-template-columns:repeat(3,24px);grid-template-rows:repeat(3,24px);gap:2px;
+  opacity:.45;transition:opacity .15s;z-index:2}
+.povcell:hover .dpad{opacity:1}
+.dpad button{background:rgba(15,19,25,.85);border:1px solid var(--line2);color:var(--bone);
+  font-size:11px;line-height:1;border-radius:2px;cursor:pointer;padding:0;
+  display:flex;align-items:center;justify-content:center;font-family:var(--mono)}
+.dpad button:hover{background:#2A333F;border-color:#5A6678}
+.dpad button:active{background:#3A4553}
+.dpad button:focus-visible{outline:2px solid var(--bone);outline-offset:1px}
+.dpad .u{grid-area:1/2}.dpad .l{grid-area:2/1}.dpad .c{grid-area:2/2;font-size:9px}
+.dpad .r{grid-area:2/3}.dpad .d{grid-area:3/2}
+#bPlay[aria-pressed="true"]{color:#93BF63;border-color:#4E6B3A}
+#cov{z-index:1}#plan{z-index:2}#view3d{z-index:4;background:none !important;background:linear-gradient(#3F70A4 0%,#7FAAD2 45%,#0F1319 46%,#0F1319 100%)}
+svg{display:block;touch-action:none}
+.masthead{position:absolute;top:18px;left:22px;z-index:6;pointer-events:none}
+.masthead h1{font-size:12px;font-weight:700;letter-spacing:.22em;text-transform:uppercase}
+.masthead p{font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:5px}
+.modes{position:absolute;top:16px;right:18px;z-index:6;display:flex;gap:4px}
+.modes button{background:#161C25;border:1px solid var(--line2);color:var(--dim);
+  font-family:var(--mono);font-size:10px;letter-spacing:.1em;padding:6px 11px;border-radius:2px;cursor:pointer}
+.modes button[aria-pressed="true"]{color:var(--bone);border-color:#5A6678;background:#212A35}
+.hint{position:absolute;left:22px;bottom:16px;z-index:6;font-family:var(--mono);font-size:10px;
+  color:var(--dim);line-height:1.7;pointer-events:none}
+.toast{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);z-index:7;background:#212A35;
+  border:1px solid var(--line2);padding:7px 13px;border-radius:3px;font-family:var(--mono);font-size:10.5px;
+  opacity:0;transition:opacity .2s;pointer-events:none}
+.toast.on{opacity:1}
+.panel{background:var(--ink2);border-left:1px solid var(--line);padding:18px 16px;overflow-y:auto}
+.eyebrow{font-family:var(--mono);font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim);margin:0 0 9px}
+.divider{height:1px;background:var(--line);margin:16px 0}
+.card{border:1px solid var(--line);border-left:3px solid var(--dot);border-radius:3px;margin-bottom:6px;overflow:hidden}
+.card.off{opacity:.4}
+.card.sel{background:#1B222C;border-color:var(--dot)}
+.head{display:flex;align-items:flex-start;gap:8px;padding:8px 10px;cursor:pointer}
+.head:hover{background:#1B222C}
+.head .b{flex:1;min-width:0}
+.head .id{font-family:var(--mono);font-size:9px;color:var(--dot);letter-spacing:.1em}
+.head .nm{font-size:12.5px;font-weight:500;margin:2px 0 3px}
+.head .mt{font-family:var(--mono);font-size:9.5px;color:var(--dim);line-height:1.55}
+.head .mt b{color:var(--warn);font-weight:500}
+.eye{background:none;border:none;color:var(--dim);cursor:pointer;font-size:13px;padding:0 2px;line-height:1}
+.eye:hover{color:var(--bone)}
+.edit{padding:0 10px 9px;display:none}
+.card.sel .edit{display:block}
+.fld{display:flex;align-items:center;gap:6px;margin-bottom:5px}
+.fld label{font-family:var(--mono);font-size:9.5px;color:var(--dim);width:52px;flex:none}
+input.t{flex:1;min-width:0;background:#0F1319;border:1px solid var(--line2);color:var(--bone);
+  font-family:var(--mono);font-size:10.5px;padding:5px 6px;border-radius:2px}
+input.t:focus{outline:1px solid var(--dot);border-color:var(--dot)}
+.row{display:flex;gap:5px}
+button.act{background:#0F1319;border:1px solid var(--line2);color:var(--bone);font-family:var(--mono);
+  font-size:10px;letter-spacing:.05em;padding:6px 8px;border-radius:2px;cursor:pointer;flex:1}
+button.act:hover{background:#212A35;border-color:#455063}
+button.act:focus-visible{outline:2px solid var(--bone);outline-offset:1px}
+button.danger:hover{border-color:#B4564F;color:var(--warn)}
+.layer{display:flex;align-items:center;gap:8px;padding:5px 0;cursor:pointer;font-size:12px}
+.layer input{accent-color:var(--bone);width:13px;height:13px;cursor:pointer}
+textarea{width:100%;height:80px;background:#0F1319;border:1px solid var(--line2);color:var(--bone);
+  font-family:var(--mono);font-size:9.5px;padding:6px;border-radius:2px;resize:vertical;line-height:1.5}
+.note{font-family:var(--mono);font-size:9.5px;color:var(--dim);line-height:1.6;margin-top:6px}
+.stat{font-family:var(--mono);font-size:10px;color:var(--dim);line-height:1.7}
+.stat b{color:var(--bone);font-weight:500}
+select.t{flex:1;background:#0F1319;border:1px solid var(--line2);color:var(--bone);
+  font-family:var(--mono);font-size:10.5px;padding:5px;border-radius:2px}
+.plabel{font-family:var(--mono);font-size:2.1px;fill:#6E7783;letter-spacing:.1em}
+.camlabel{font-family:var(--mono);font-size:2.5px;font-weight:500;letter-spacing:.06em}
+.gridline{stroke:#1E2732;stroke-width:.18}
+@media (max-width:840px){.wrap{grid-template-columns:1fr;grid-template-rows:54vh auto;height:auto}
+  .panel{border-left:none;border-top:1px solid var(--line)}.hint{display:none}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="stage" id="stage">
+    <canvas id="cov"></canvas>
+    <svg id="plan" preserveAspectRatio="xMidYMid meet"></svg>
+    <canvas id="gl3d" style="display:none"></canvas>
+    <svg id="view3d" preserveAspectRatio="xMidYMid meet" style="display:none"></svg>
+    <div id="povgrid"></div>
+    <div class="masthead"><h1>Coverage planner</h1><p id="sub">3D occlusion · target height 3 ft</p></div>
+    <div class="modes">
+      <button id="m2d" aria-pressed="true">PLAN</button>
+      <button id="m3d" aria-pressed="false">3D</button>
+      <button id="mpov" aria-pressed="false">CAMS</button>
+      <button id="msplit" aria-pressed="false">SPLIT</button>
+      <button id="bPlay" title="Play the PT circuit">▶ CIRCUIT</button>
+      <button id="bSpeed" title="Playback speed">4×</button>
+    </div>
+    <div class="hint" id="hint">Scroll to zoom · drag background to pan · drag box corners to resize, ✛ to move it</div>
+    <div class="toast" id="toast"></div>
+  </div>
+
+  <aside class="panel">
+    <div class="eyebrow">Coverage <span id="stats" style="float:right;text-transform:none;letter-spacing:0"></span></div>
+    <p class="stat" id="statline"></p>
+
+    <div class="divider"></div>
+    <div class="eyebrow">Cameras</div>
+    <div id="camlist"></div>
+    <div class="row" style="margin-top:6px">
+      <button class="act" id="bAddCam">+ Camera</button>
+      <button class="act" id="bAddBox">+ Occluder</button>
+    </div>
+
+    <div class="divider"></div>
+    <div class="eyebrow">Occluders</div>
+    <div id="boxlist"></div>
+
+    <div class="divider"></div>
+    <div class="eyebrow">Settings</div>
+    <div class="fld"><label>target</label>
+      <select class="t" id="tz">
+        <option value="0">ground 0 ft</option>
+        <option value="3" selected>torso 3 ft</option>
+        <option value="5.5">head 5.5 ft</option>
+      </select></div>
+    <div class="fld"><label>draw</label>
+      <select class="t" id="rmode">
+        <option value="cones" selected>cones (vector)</option>
+        <option value="heat">heatmap (pixels)</option>
+      </select></div>
+    <div class="fld"><label>fence ft</label>
+      <input class="t" id="fh" type="number" step="0.5" value="8"></div>
+    <label class="layer"><input type="checkbox" id="tFence" checked> Perimeter fence blocks</label>
+    <label class="layer"><input type="checkbox" id="tOcc" checked> Occlusion on</label>
+    <label class="layer"><input type="checkbox" id="tId" checked> Shade face-ID range</label>
+    <label class="layer"><input type="checkbox" id="tTour"> Count PT circuit coverage</label>
+    <label class="layer"><input type="checkbox" id="tFrus" checked> Frustum solids (3D)</label>
+    <label class="layer"><input type="checkbox" id="tSplat"> Splatter surfaces (3D)</label>
+    <label class="layer"><input type="checkbox" id="tGrid" checked> 5 ft grid</label>
+
+    <div class="divider"></div>
+    <div class="eyebrow">Presets</div>
+    <div class="row" style="margin-bottom:5px">
+      <button class="act" data-preset="measured">House (measured)</button>
+    </div>
+    <div class="row" style="margin-bottom:5px">
+      <button class="act" data-preset="yours">Your 7 PTZ</button>
+      <button class="act" data-preset="duo2">2 Duo + 4 E1</button>
+    </div>
+    <div class="row"><button class="act" data-preset="duo4">4 Duo mid-wall</button>
+      <button class="act" id="bReset">Reset all</button></div>
+    <div class="row" style="margin-top:5px"><button class="act" id="bFit">Fit view</button></div>
+
+    <div class="divider"></div>
+    <div class="eyebrow">Layout code</div>
+    <textarea id="code" spellcheck="false"></textarea>
+    <div class="row" style="margin-top:5px">
+      <button class="act" id="bCopy">Copy</button>
+      <button class="act" id="bLoad">Load</button>
+    </div>
+    <p class="note">Plain text — paste into chat to share the exact geometry.</p>
+    <div class="divider"></div>
+    <div class="eyebrow">Shortcuts</div>
+    <p class="note">2 / 3 / 4 / 5 &nbsp;plan · 3D · cams · split<br>Space &nbsp;play PT circuit<br>
+      F &nbsp;fit view &nbsp;·&nbsp; G &nbsp;grid<br>
+      B &nbsp;restore measured boundary<br>
+      E &nbsp;edit boundary &nbsp;·&nbsp; Esc &nbsp;deselect<br>
+      S &nbsp;splatter &nbsp;·&nbsp; V &nbsp;frustums<br>O &nbsp;occlusion on/off</p>
+  </aside>
+</div>
+
+<script>
+"use strict";
+
+/*MODULES*/
+</script>
+</body>
+</html>

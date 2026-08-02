@@ -1,0 +1,25 @@
+{
+  "modules": [
+    "gl.js",
+    "mesh.js",
+    "util.js",
+    "state.js",
+    "occlusion.js",
+    "viewport.js",
+    "raster.js",
+    "cones.js",
+    "plan.js",
+    "splat.js",
+    "frusta.js",
+    "materials.js",
+    "pov.js",
+    "view3d.js",
+    "glscene.js",
+    "render.js",
+    "interact.js",
+    "panel.js",
+    "codec.js",
+    "presets.js",
+    "anim.js"
+  ]
+}
