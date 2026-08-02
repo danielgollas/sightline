@@ -305,6 +305,60 @@ def main():
         page.evaluate("() => { opts.splat = false; render(); }")
         page.wait_for_timeout(500)
 
+        # ---- 13. hand tool on the camera views ----
+        page.click("#mpov")
+        page.wait_for_timeout(7000)
+        hand = page.evaluate("""() => {
+            const c = cams[0];
+            const before = {a:c.a, t:c.t};
+            // limits are respected in both directions
+            c.tiltMin = -10; c.tiltMax = 20;
+            aimTo(c, c.a, 90);   const hiT = c.t;
+            aimTo(c, c.a, -90);  const loT = c.t;
+            // a bounded pan snaps to the nearer end rather than wrapping
+            c.panMin = 0; c.panMax = 90;
+            aimTo(c, 200, 0);    const panned = c.a;
+            const inRange = (aimTo(c, 45, 0), c.a);
+            // the PT circuit travels with the head
+            c.panMin=null; c.panMax=null; c.tiltMin=null; c.tiltMax=null;
+            c.tour = [{a:100,t:10,d:8}];
+            const t0 = c.tour[0].a;
+            aimTo(c, c.a + 30, c.t);
+            const tourMoved = Math.abs(((c.tour[0].a - t0 + 540) % 360) - 180 - 30) < 0.01;
+            c.tour = [];
+            c.a = before.a; c.t = before.t;
+            return {hiT, loT, panned, inRange, tourMoved,
+                    buttons: document.querySelectorAll('.handbtn').length};
+        }""")
+        check("hand tool clamps tilt to its limits",
+              hand["hiT"] == 20 and hand["loT"] == -10, json.dumps(hand))
+        check("bounded pan snaps to the nearer limit",
+              hand["panned"] in (0, 90) and abs(hand["inRange"] - 45) < 0.01, json.dumps(hand))
+        check("the PT circuit travels with the head", hand["tourMoved"], json.dumps(hand))
+        check("every camera view has a hand button",
+              hand["buttons"] >= 1, json.dumps(hand))
+
+        # and drag it for real through the DOM
+        drag = page.evaluate("""() => {
+            const cell = document.querySelector('.povcell');
+            const btn = cell.querySelector('.handbtn');
+            btn.click();                                  // arm the hand
+            const armed = cell.classList.contains('grab');
+            const c = cams.find(x => x.id === cell.dataset.cam);
+            const a0 = c.a, t0 = c.t;
+            const r = cell.getBoundingClientRect();
+            const ev = (type, x, y) => cell.dispatchEvent(
+                new PointerEvent(type, {clientX:x, clientY:y, bubbles:true, pointerId:7}));
+            ev('pointerdown', r.x + r.width/2, r.y + r.height/2);
+            ev('pointermove', r.x + r.width/2 - 80, r.y + r.height/2 + 30);
+            ev('pointerup',   r.x + r.width/2 - 80, r.y + r.height/2 + 30);
+            return {armed, movedPan: Math.abs(c.a - a0) > 0.5, movedTilt: Math.abs(c.t - t0) > 0.5,
+                    a0, a1: c.a, t0, t1: c.t};
+        }""")
+        check("hand button arms the cell", drag["armed"], json.dumps(drag))
+        check("dragging the view pans and tilts the camera",
+              drag["movedPan"] and drag["movedTilt"], json.dumps(drag))
+
         check("no uncaught page errors", not errors, "; ".join(errors[:3]))
 
         browser.close()

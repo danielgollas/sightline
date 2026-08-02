@@ -58,6 +58,17 @@ body{background:var(--ink);color:var(--bone);font-family:var(--sans);-webkit-fon
 .dpad button:focus-visible{outline:2px solid var(--bone);outline-offset:1px}
 .dpad .u{grid-area:1/2}.dpad .l{grid-area:2/1}.dpad .c{grid-area:2/2;font-size:9px}
 .dpad .r{grid-area:2/3}.dpad .d{grid-area:3/2}
+/* hand tool: drag the camera view to pan and tilt */
+.handbtn{position:absolute;right:8px;bottom:86px;width:26px;height:26px;z-index:3;
+  background:rgba(15,19,25,.85);border:1px solid var(--line2);color:var(--bone);
+  border-radius:2px;cursor:pointer;font-size:13px;line-height:1;padding:0;
+  opacity:.45;transition:opacity .15s;display:flex;align-items:center;justify-content:center}
+.povcell:hover .handbtn{opacity:1}
+.handbtn:hover{background:#2A333F;border-color:#5A6678}
+.handbtn[aria-pressed="true"]{background:#2E3947;border-color:var(--bone);opacity:1}
+.handbtn:focus-visible{outline:2px solid var(--bone);outline-offset:1px}
+.povcell.grab{cursor:grab}
+.povcell.grab.grabbing{cursor:grabbing}
 #bPlay[aria-pressed="true"]{color:var(--good);border-color:#4E6B3A}
 /* view3d is the SVG handle overlay and must sit ABOVE the GL canvas (z-index 3),
    and must be transparent or it paints over the whole render. The gradient is

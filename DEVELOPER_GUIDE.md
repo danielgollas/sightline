@@ -236,6 +236,37 @@ contributes nothing at night.
 
 ---
 
+## Performance
+
+The plan view's cost is almost entirely the coverage cone march - with cones
+off, everything else (grass, boxes, cameras, grid, the SVG) is about 1 ms
+against 85. Three things keep it interactive, and all three are load-bearing:
+
+- **One march per camera, not one per quality tier.** `qual()` returns 0/1/2;
+  marching once per tier doubled the work for nothing.
+- **Cone geometry is world-space and cached** (`conesFor`), so pan and zoom
+  re-project rather than re-march, and dragging one camera leaves the others
+  cached. Detail is deliberately absent from the cache key so a coarse request
+  can reuse a fine result - otherwise grabbing the pointer re-marches every
+  camera on the first drag frame.
+- **The plan SVG is built in four layers**, base / cones / occluders / cameras,
+  of which base and occluders are cached against geometry, view transform and
+  selection. Rebuilding all ~250 nodes per pointer-move produced enough garbage
+  that GC turned 8 ms frames into 45 ms ones. The layer split is by paint
+  order, not convenience: cones draw over the grass but under the buildings.
+
+The 3D ray-cast overlays (frustum solids, splatter) are cached the same way.
+
+Measured on the default house: camera drag 10.8 ms/frame, pan 2.8, idle render
+4.3, 3D render 7.6. Of the drag's 10.8, about 9.2 is the one genuine re-march
+of the camera being moved - that is the floor without a broad-phase.
+
+If you change anything in here, re-measure rather than reason. The bottleneck
+was not where call counts suggested: memoising the most-called function in the
+inner loop (196k calls per frame) made it *slower*.
+
+---
+
 ## Still open
 
 **Per-pixel equivalence between the GL render and a CPU ray-cast reference is

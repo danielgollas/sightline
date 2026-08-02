@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.4.0
+
+### Drag to pan and tilt
+A hand button on each camera view. Arm it and drag the view itself to aim the
+camera: grab semantics, so the scene follows the hand and dragging the full
+width of the frame sweeps exactly one horizontal field of view. Pressing the
+hand and dragging straight off it works without arming first.
+
+The head respects its limits. Tilt is bounded (-25 to 60 degrees by default,
+editable per camera); pan is unbounded unless you set a range, because a PTZ
+that sweeps 355 degrees is effectively free and a fixed camera is re-aimed by
+moving the bracket. A bounded pan snaps to whichever end is nearer rather than
+wrapping the long way round. Hitting a limit says so.
+
+A PT circuit travels with the head, the same way the D-pad has always moved it.
+
+Dragging redraws only that one cell. A full render would re-march the coverage
+cones and repaint the plan on every pointer-move; the plan and the figures
+catch up when the drag ends.
+
+### Fixed
+- Camera views were sized from the legacy `lens` tag, so a Duo added from the
+  catalog got a normal-width cell instead of a double-width one. The width now
+  comes from the spec's field of view.
+- `setPointerCapture` could throw and abort a drag; a failed capture is no
+  longer fatal.
+
 ## 0.3.1
 
 Performance pass on the plan and 3D views, plus a splatter regression found

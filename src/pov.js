@@ -204,14 +204,135 @@ function drawPOV_svg_unused(c,svgEl,VW,VH){
 // width:height that renders the modelled FOV with square pixels
 // the frame is the sensor's shape; the FOV is mapped to fill it
 function lensAspect(c){ return lensOf(c).sensor; }
+// A camera with a very wide lens gets a double-width cell. This asks the spec
+// rather than the legacy `lens` tag, so a Duo added from the catalog is framed
+// correctly too.
+const isWide=c=>specOf(c).fovH>=150;
+
+/* ---------------- pan and tilt limits ---------------- */
+/*
+   A real head cannot point anywhere. Tilt is bounded by the mount; pan is
+   bounded only if the catalog says so (a PTZ that sweeps 355 degrees is
+   effectively free, and a fixed camera is re-aimed by moving the bracket,
+   which the plan view already allows).
+
+   Per-camera overrides beat the catalog, which beats these defaults.
+*/
+const TILT_MIN=-25, TILT_MAX=60;
+function camLimits(c){
+  const S=specOf(c);
+  const pick=(a,b,d)=>a!==undefined&&a!==null?a:(b!==undefined&&b!==null?b:d);
+  return {
+    tMin:pick(c.tiltMin,S.tiltMin,TILT_MIN),
+    tMax:pick(c.tiltMax,S.tiltMax,TILT_MAX),
+    aMin:pick(c.panMin,S.panMin,null),
+    aMax:pick(c.panMax,S.panMax,null)
+  };
+}
+// Signed offset from `from` to `to`, in -180..180.
+const arc=(from,to)=>((to-from+540)%360)-180;
+// Clamp a bearing into [aMin,aMax] the short way round.
+function clampPan(a,aMin,aMax){
+  const span=((aMax-aMin)+360)%360 || 360;
+  const off=((a-aMin)+360)%360;
+  if(off<=span)return norm(a);
+  // outside: snap to whichever end is nearer
+  return Math.abs(arc(a,aMax))<Math.abs(arc(a,aMin))?norm(aMax):norm(aMin);
+}
+// Aim the camera, respecting its limits. The PT circuit travels with it, the
+// same way the D-pad has always moved it. Returns which limits were hit.
+function aimTo(c,a,t){
+  const L=camLimits(c);
+  const t2=clamp(Math.round(t*10)/10,L.tMin,L.tMax);
+  const a2=(L.aMin!==null&&L.aMax!==null)?clampPan(a,L.aMin,L.aMax):norm(a);
+  const da=arc(c.a,a2), dt=t2-(c.t||0);
+  c.a=a2; c.t=t2;
+  if(c.tour){
+    c.tour.forEach(k=>{
+      k.a=norm(k.a+da);
+      k.t=clamp(k.t+dt,L.tMin,L.tMax);
+    });
+  }
+  return {pan:Math.abs(arc(a,a2))>0.05, tilt:Math.abs(t2-t)>0.05};
+}
+
 const STEP=2;
 let holdTimer=null;
 function nudge(c,da,dt){
-  if(da){c.a=norm(c.a+da);
-    if(c.tour)c.tour.forEach(k=>k.a=norm(k.a+da));}
-  if(dt){c.t=clamp(Math.round((c.t+dt)*10)/10,-25,60);
-    if(c.tour)c.tour.forEach(k=>k.t=clamp(k.t+dt,-25,60));}
+  aimTo(c, c.a+(da||0), (c.t||0)+(dt||0));
   render(); list();
+}
+
+/* ---------------- the hand: drag to pan and tilt ---------------- */
+// Redraw one cell rather than the whole app. A full render() re-marches cones
+// and repaints the plan, which is far too much for a pointer-move; the plan
+// and the coverage figures catch up once the drag ends.
+function redrawCell(c,cell){
+  const cvs=cell.querySelector('canvas'), sv=cell.querySelector('svg');
+  const wide=isWide(c);
+  if(renderPOVGL(c,cvs)){ cvs.style.display=''; drawPOVOverlay(c,sv,wide?1280:640,400); }
+  else { cvs.style.display='none'; drawPOV_svg_unused(c,sv,wide?1280:640,400); }
+}
+let _limitToast=0;
+function handDrag(cell,c){
+  let d=null;
+  cell.addEventListener('pointerdown',e=>{
+    if(!cell.classList.contains('grab'))return;
+    if(e.target.closest('.dpad')||e.target.closest('.handbtn'))return;
+    d={x:e.clientX,y:e.clientY,a:c.a,t:c.t||0,
+       w:cell.clientWidth||1,h:cell.clientHeight||1,moved:false};
+    // Capture keeps the drag alive if the pointer leaves the cell. It can
+    // throw when there is no active pointer with this id, and a failed
+    // capture must not abort the drag.
+    try{ cell.setPointerCapture(e.pointerId); }catch(_){}
+    cell.classList.add('grabbing');
+    e.preventDefault(); e.stopPropagation();
+  });
+  cell.addEventListener('pointermove',e=>{
+    if(!d)return;
+    const S=specOf(c);
+    const dx=e.clientX-d.x, dy=e.clientY-d.y;
+    if(Math.abs(dx)+Math.abs(dy)>3)d.moved=true;
+    // Grab semantics: the scene follows the hand, so dragging right turns the
+    // camera left. Dragging the full width of the frame sweeps one full
+    // horizontal field of view, which makes the gearing feel 1:1.
+    const hit=aimTo(c, d.a - dx/d.w*S.fovH, d.t - dy/d.h*S.fovV);
+    redrawCell(c,cell);
+    if((hit.pan||hit.tilt) && performance.now()-_limitToast>1200){
+      _limitToast=performance.now();
+      toast(hit.tilt?`${c.id} is at its tilt limit`:`${c.id} is at its pan limit`);
+    }
+  });
+  ['pointerup','pointercancel'].forEach(v=>cell.addEventListener(v,e=>{
+    if(!d)return;
+    const moved=d.moved; d=null;
+    cell.classList.remove('grabbing');
+    if(moved){ render(); list(); }      // now catch the plan and the figures up
+  }));
+}
+function makeHand(c){
+  const b=document.createElement('button');
+  b.className='handbtn'; b.textContent='\u270B';
+  b.title='Hand: drag the view to pan and tilt this camera';
+  b.setAttribute('aria-pressed','false');
+  b.onclick=e=>{
+    e.stopPropagation();
+    const cell=b.closest('.povcell');
+    const on=b.getAttribute('aria-pressed')==='true';
+    b.setAttribute('aria-pressed',String(!on));
+    cell.classList.toggle('grab',!on);
+  };
+  // Pressing the hand and dragging straight off it works too, without having
+  // to click it first - that is what "click and drag" means to most people.
+  b.addEventListener('pointerdown',e=>{
+    const cell=b.closest('.povcell');
+    if(!cell.classList.contains('grab')){
+      cell.classList.add('grab');
+      b.setAttribute('aria-pressed','true');
+    }
+    e.stopPropagation();
+  });
+  return b;
 }
 function makeDpad(c){
   const d=document.createElement('div'); d.className='dpad';
@@ -264,7 +385,7 @@ function renderPOV(){
       const cell=wrap.querySelector(`.povcell[data-cam="${c.id}"]`);
       if(!cell)return;
       const cvs=cell.querySelector('canvas'), sv=cell.querySelector('svg');
-      const wide=(c.lens||'ptz')==='duo';
+      const wide=isWide(c);
       if(renderPOVGL(c,cvs)){ cvs.style.display=''; drawPOVOverlay(c,sv,wide?1280:640,400); }
       else { cvs.style.display='none'; drawPOV_svg_unused(c,sv,wide?1280:640,400); }
     });
@@ -275,7 +396,7 @@ function renderPOV(){
   wrap.classList.toggle('one',!!maxed||mode==='split');
   wrap.style.gridTemplateColumns=(maxed||mode==='split')?'1fr':(live.length<=2?'1fr':'1fr 1fr');
   list.forEach(c=>{
-    const wide=(c.lens||'ptz')==='duo';
+    const wide=isWide(c);
     const cell=document.createElement('div');
     cell.className='povcell'+(wide?' wide':'');
     cell.style.aspectRatio=String(lensAspect(c));
@@ -284,10 +405,15 @@ function renderPOV(){
     const sv=document.createElementNS(NS,'svg');
     sv.setAttribute('preserveAspectRatio','none');
     cell.append(sv);
-    cell.onclick=()=>{povMax=povMax===c.id?null:c.id;renderPOV();};
+    cell.onclick=e=>{
+      if(cell.classList.contains('grab'))return;   // the hand owns the drag
+      povMax=povMax===c.id?null:c.id;renderPOV();
+    };
     cell.title=povMax?'click to show all cameras':'click to maximise';
     cell.append(makeDpad(c));
+    cell.append(makeHand(c));
     cell.dataset.cam=c.id;
+    handDrag(cell,c);
     wrap.append(cell);
     const ro=watchCells(); if(ro)ro.observe(cell);
     requestAnimationFrame(()=>{

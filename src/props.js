@@ -167,6 +167,25 @@ function propsCam(p,c){
   p.append(num('x',c.x,v=>c.x=v));
   p.append(num('y',c.y,v=>c.y=v));
   p.append(num('price',c.price||0,v=>c.price=v,10));
+  p.append(head('Pan / tilt limits'));
+  const lim=camLimits(c);
+  p.append(num('tilt min°',lim.tMin,v=>c.tiltMin=v,1));
+  p.append(num('tilt max°',lim.tMax,v=>c.tiltMax=v,1));
+  const panRow=mk('div','row');
+  panRow.append(btn(lim.aMin===null?'Limit pan…':'Free pan',()=>{
+    if(lim.aMin===null){ c.panMin=norm(c.a-45); c.panMax=norm(c.a+45); }
+    else { c.panMin=null; c.panMax=null; }
+    render(); list();
+  }));
+  p.append(panRow);
+  if(lim.aMin!==null){
+    p.append(num('pan from°',lim.aMin,v=>c.panMin=norm(v),1));
+    p.append(num('pan to°',lim.aMax,v=>c.panMax=norm(v),1));
+  }
+  const hn=mk('p','note');
+  hn.innerHTML='The ✋ tool on a camera view drags to pan and tilt within these limits.';
+  p.append(hn);
+
   p.append(head('Recording'));
   p.append(inheritField('fps',c,'fps',[5,10,15,20,25,30]));
   p.append(inheritField('quality',c,'quality',['low','med','high']));
