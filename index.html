@@ -21,7 +21,11 @@ body{background:var(--ink);color:var(--bone);font-family:var(--sans);-webkit-fon
 .stage{position:relative;min-width:0;background:radial-gradient(ellipse at 45% 40%,#151B24 0%,var(--ink) 72%);overflow:hidden}
 .stage.split #cov,.stage.split #plan,.stage.split #view3d{width:50%}
 .stage.split #povgrid{left:50%;width:50%;padding:52px 10px 10px;border-left:1px solid var(--line)}
-#cov,#plan,#view3d{position:absolute;inset:0;width:100%;height:100%}
+#cov,#plan,#view3d,#gl3d{position:absolute;inset:0;width:100%;height:100%}
+#gl3d{z-index:3}
+.stage.split #gl3d{width:50%}
+.povcell canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.povcell svg{position:absolute;inset:0;z-index:2}
 #povgrid{position:absolute;inset:0;z-index:4;display:none;grid-template-columns:1fr 1fr;
   gap:8px;padding:52px 12px 12px;overflow-y:auto;align-content:start;grid-auto-rows:min-content}
 .povcell{position:relative;background:#0B0F14;border:1px solid var(--line);border-radius:3px;
@@ -42,7 +46,7 @@ body{background:var(--ink);color:var(--bone);font-family:var(--sans);-webkit-fon
 .dpad .u{grid-area:1/2}.dpad .l{grid-area:2/1}.dpad .c{grid-area:2/2;font-size:9px}
 .dpad .r{grid-area:2/3}.dpad .d{grid-area:3/2}
 #bPlay[aria-pressed="true"]{color:#93BF63;border-color:#4E6B3A}
-#cov{z-index:1}#plan{z-index:2}#view3d{z-index:3;background:linear-gradient(#3F70A4 0%,#7FAAD2 45%,#0F1319 46%,#0F1319 100%)}
+#cov{z-index:1}#plan{z-index:2}#view3d{z-index:4;background:none !important;background:linear-gradient(#3F70A4 0%,#7FAAD2 45%,#0F1319 46%,#0F1319 100%)}
 svg{display:block;touch-action:none}
 .masthead{position:absolute;top:18px;left:22px;z-index:6;pointer-events:none}
 .masthead h1{font-size:12px;font-weight:700;letter-spacing:.22em;text-transform:uppercase}
@@ -107,6 +111,7 @@ select.t{flex:1;background:#0F1319;border:1px solid var(--line2);color:var(--bon
   <div class="stage" id="stage">
     <canvas id="cov"></canvas>
     <svg id="plan" preserveAspectRatio="xMidYMid meet"></svg>
+    <canvas id="gl3d" style="display:none"></canvas>
     <svg id="view3d" preserveAspectRatio="xMidYMid meet" style="display:none"></svg>
     <div id="povgrid"></div>
     <div class="masthead"><h1>Coverage planner</h1><p id="sub">3D occlusion · target height 3 ft</p></div>
@@ -194,6 +199,487 @@ select.t{flex:1;background:#0F1319;border:1px solid var(--line2);color:var(--bon
 
 <script>
 "use strict";
+
+/* ============================================================================
+   Sightline WebGL renderer
+
+   Replaces the SVG painter's-algorithm views with a real depth-buffered
+   rasteriser. Two things this buys us:
+
+     1. Correct visibility. The painter version overdrew the house wall in
+        C1's view by 6x because a polygon that wraps behind the lens cannot
+        be clipped and filled correctly in a cylindrical image. A z-buffer
+        resolves it per fragment and the question disappears.
+
+     2. Ambient occlusion instead of cast shadows. AO is baked per vertex on
+        the CPU using the same ray engine the coverage model uses, so the
+        shading cannot disagree with the occlusion maths.
+
+   The Duo is rendered as two 90 degree perspective halves side by side,
+   which is what the hardware actually does - two sensors stitched - and
+   avoids the straight-lines-become-curves problem entirely.
+   ========================================================================== */
+
+const GL = (() => {
+
+/* ---------- tiny matrix helpers ---------- */
+const M4 = {
+  ident:()=>[1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1],
+  mul(a,b){
+    const o=new Array(16);
+    for(let r=0;r<4;r++)for(let c=0;c<4;c++){
+      let s=0; for(let k=0;k<4;k++)s+=a[k*4+r]*b[c*4+k];
+      o[c*4+r]=s;
+    }
+    return o;
+  },
+  perspective(fovyDeg,aspect,near,far){
+    const f=1/Math.tan(fovyDeg*Math.PI/360), nf=1/(near-far);
+    return [f/aspect,0,0,0, 0,f,0,0, 0,0,(far+near)*nf,-1, 0,0,2*far*near*nf,0];
+  },
+  // The scene is left-handed: x east, y south, z up, so x cross y points down.
+  // A physically correct camera basis therefore has determinant -1 in these
+  // coordinates. Build it explicitly - screen-right is world-up cross forward,
+  // which puts south on your right when you face east - and let the caller
+  // flip the winding order to match. Feeding these coordinates to a
+  // conventional right-handed lookAt is what mirrored every view.
+  lookAtLH(eye,at,worldUp){
+    let f=[at[0]-eye[0],at[1]-eye[1],at[2]-eye[2]];
+    let l=Math.hypot(...f)||1; f=f.map(v=>v/l);
+    let r=[worldUp[1]*f[2]-worldUp[2]*f[1],
+           worldUp[2]*f[0]-worldUp[0]*f[2],
+           worldUp[0]*f[1]-worldUp[1]*f[0]];
+    l=Math.hypot(...r)||1; r=r.map(v=>v/l);
+    const u=[f[1]*r[2]-f[2]*r[1], f[2]*r[0]-f[0]*r[2], f[0]*r[1]-f[1]*r[0]];
+    const n=f.map(v=>-v);                       // GL looks down -Z
+    return [r[0],u[0],n[0],0, r[1],u[1],n[1],0, r[2],u[2],n[2],0,
+      -(r[0]*eye[0]+r[1]*eye[1]+r[2]*eye[2]),
+      -(u[0]*eye[0]+u[1]*eye[1]+u[2]*eye[2]),
+      -(n[0]*eye[0]+n[1]*eye[1]+n[2]*eye[2]), 1];
+  }
+};
+
+/* ---------- shaders ---------- */
+const VS = `
+attribute vec3 aPos;
+attribute vec3 aNormal;
+attribute vec3 aColor;
+attribute float aAO;
+uniform mat4 uMVP;
+uniform mat4 uView;
+uniform vec3 uSun;
+uniform float uFlat;
+// uCyl > 0 switches to a cylindrical camera, which is the only way to render
+// past 180 degrees: a perspective divide diverges as the half-angle reaches 90.
+uniform float uCyl;
+uniform float uHalfH;   // radians
+uniform float uHalfV;   // radians
+uniform float uFar;
+varying vec3 vCol;
+varying float vFog;
+varying vec4 vClip;
+void main(){
+  vec4 clip;
+  if(uCyl > 0.5){
+    vec4 vc = uView * vec4(aPos,1.0);
+    float fwd = -vc.z;                       // GL looks down -Z
+    float phi = atan(vc.x, fwd);             // -pi .. pi
+    float r   = length(vec2(vc.x, vc.z));
+    float h   = vc.y / max(r, 1e-4);
+    float d   = length(vc.xyz);
+    // Vertices outside the barrel wrap around the seam behind the camera and
+    // would smear a triangle across the frame. Push them out of the clip
+    // volume so the rasteriser trims the triangle instead.
+    if(abs(phi) > uHalfH + 0.30){
+      gl_Position = vec4(0.0,0.0,2.0,1.0);
+      vCol = vec3(0.0); vFog = 0.0; vClip = vec4(0.0,0.0,2.0,1.0);
+      return;
+    }
+    float nx = phi / uHalfH;
+    float ny = h / tan(uHalfV);
+    float nz = clamp(d / uFar, 0.0, 1.0) * 2.0 - 1.0;
+    clip = vec4(nx, ny, nz, 1.0);
+  } else {
+    clip = uMVP * vec4(aPos,1.0);
+  }
+  gl_Position = clip;
+  vClip = clip;
+  float lam = max(dot(normalize(aNormal), uSun), 0.0);
+  // sky bounce: surfaces facing up pick up a little blue, down a little warm
+  float up = aNormal.z * 0.5 + 0.5;
+  vec3 ambient = mix(vec3(0.30,0.29,0.27), vec3(0.44,0.50,0.60), up);
+  vec3 lit = aColor * (ambient + vec3(0.95,0.92,0.84) * lam * 0.85);
+  vCol = mix(lit * aAO, aColor, uFlat);
+  float dist = (uCyl > 0.5) ? length((uView * vec4(aPos,1.0)).xyz) : clip.w;
+  vFog = mix(clamp(dist / 260.0, 0.0, 0.55), 0.0, uFlat);
+}`;
+
+const FS = `
+precision mediump float;
+varying vec3 vCol;
+varying float vFog;
+void main(){
+  vec3 haze = vec3(0.61,0.77,0.89);
+  gl_FragColor = vec4(mix(vCol, haze, vFog), 1.0);
+}`;
+
+const SKY_VS = `
+attribute vec2 aXY;
+varying float vY;
+void main(){ vY = aXY.y * 0.5 + 0.5; gl_Position = vec4(aXY,0.999,1.0); }`;
+
+const SKY_FS = `
+precision mediump float;
+varying float vY;
+uniform vec3 uTop;
+uniform vec3 uBot;
+void main(){ gl_FragColor = vec4(mix(uBot,uTop,vY),1.0); }`;
+
+function compile(gl,type,src){
+  const sh=gl.createShader(type);
+  gl.shaderSource(sh,src); gl.compileShader(sh);
+  if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS))
+    throw new Error('shader: '+gl.getShaderInfoLog(sh));
+  return sh;
+}
+function program(gl,vs,fs){
+  const p=gl.createProgram();
+  gl.attachShader(p,compile(gl,gl.VERTEX_SHADER,vs));
+  gl.attachShader(p,compile(gl,gl.FRAGMENT_SHADER,fs));
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS))
+    throw new Error('link: '+gl.getProgramInfoLog(p));
+  return p;
+}
+
+/* ---------- context ---------- */
+function makeCtx(canvas){
+  const gl=canvas.getContext('webgl',
+    {antialias:true,alpha:false,depth:true,preserveDrawingBuffer:true});
+  if(!gl)return null;
+  const ctx={gl,canvas};
+  ctx.prog=program(gl,VS,FS);
+  ctx.sky=program(gl,SKY_VS,SKY_FS);
+  ctx.loc={
+    aPos:gl.getAttribLocation(ctx.prog,'aPos'),
+    aNormal:gl.getAttribLocation(ctx.prog,'aNormal'),
+    aColor:gl.getAttribLocation(ctx.prog,'aColor'),
+    aAO:gl.getAttribLocation(ctx.prog,'aAO'),
+    uMVP:gl.getUniformLocation(ctx.prog,'uMVP'),
+    uSun:gl.getUniformLocation(ctx.prog,'uSun'),
+    uFlat:gl.getUniformLocation(ctx.prog,'uFlat'),
+    uView:gl.getUniformLocation(ctx.prog,'uView'),
+    uCyl:gl.getUniformLocation(ctx.prog,'uCyl'),
+    uHalfH:gl.getUniformLocation(ctx.prog,'uHalfH'),
+    uHalfV:gl.getUniformLocation(ctx.prog,'uHalfV'),
+    uFar:gl.getUniformLocation(ctx.prog,'uFar'),
+    skyXY:gl.getAttribLocation(ctx.sky,'aXY'),
+    skyTop:gl.getUniformLocation(ctx.sky,'uTop'),
+    skyBot:gl.getUniformLocation(ctx.sky,'uBot')
+  };
+  ctx.buf={pos:gl.createBuffer(),nrm:gl.createBuffer(),col:gl.createBuffer(),
+           ao:gl.createBuffer(),skyQuad:gl.createBuffer()};
+  gl.bindBuffer(gl.ARRAY_BUFFER,ctx.buf.skyQuad);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]),gl.STATIC_DRAW);
+  gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.CULL_FACE);
+  gl.cullFace(gl.BACK);
+  gl.frontFace(gl.CW);
+  ctx.count=0;
+  return ctx;
+}
+
+function upload(ctx,mesh){
+  const {gl,buf}=ctx;
+  const put=(b,arr)=>{gl.bindBuffer(gl.ARRAY_BUFFER,b);
+    gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(arr),gl.STATIC_DRAW);};
+  put(buf.pos,mesh.pos); put(buf.nrm,mesh.nrm);
+  put(buf.col,mesh.col); put(buf.ao,mesh.ao);
+  ctx.count=mesh.pos.length/3;
+}
+
+function drawScene(ctx,mvp,sun,skyTop,skyBot,vp,cyl){
+  const {gl,loc,buf}=ctx;
+  gl.viewport(vp[0],vp[1],vp[2],vp[3]);
+  gl.enable(gl.SCISSOR_TEST);
+  gl.scissor(vp[0],vp[1],vp[2],vp[3]);
+
+  // clear FIRST, with the depth mask open. glClear is gated by depthMask,
+  // so clearing after depthMask(false) is a silent no-op and last frame's
+  // depth survives - which is what smeared 3D and blacked out the second
+  // half of each Duo.
+  gl.depthMask(true);
+  gl.clearColor(skyBot[0],skyBot[1],skyBot[2],1);
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+
+  gl.depthMask(false);
+  gl.useProgram(ctx.sky);
+  gl.bindBuffer(gl.ARRAY_BUFFER,buf.skyQuad);
+  gl.enableVertexAttribArray(loc.skyXY);
+  gl.vertexAttribPointer(loc.skyXY,2,gl.FLOAT,false,0,0);
+  gl.uniform3fv(loc.skyTop,skyTop);
+  gl.uniform3fv(loc.skyBot,skyBot);
+  gl.drawArrays(gl.TRIANGLES,0,6);
+  gl.disableVertexAttribArray(loc.skyXY);
+  gl.depthMask(true);
+
+  if(!ctx.count){gl.disable(gl.SCISSOR_TEST);return;}
+  gl.useProgram(ctx.prog);
+  const bind=(b,l,n)=>{gl.bindBuffer(gl.ARRAY_BUFFER,b);
+    gl.enableVertexAttribArray(l); gl.vertexAttribPointer(l,n,gl.FLOAT,false,0,0);};
+  bind(buf.pos,loc.aPos,3); bind(buf.nrm,loc.aNormal,3);
+  bind(buf.col,loc.aColor,3); bind(buf.ao,loc.aAO,1);
+  gl.uniformMatrix4fv(loc.uMVP,false,new Float32Array(mvp));
+  gl.uniformMatrix4fv(loc.uView,false,new Float32Array(cyl?cyl.view:mvp));
+  gl.uniform1f(loc.uCyl,cyl?1:0);
+  gl.uniform1f(loc.uHalfH,cyl?cyl.halfH:1);
+  gl.uniform1f(loc.uHalfV,cyl?cyl.halfV:1);
+  gl.uniform1f(loc.uFar,cyl?cyl.far:600);
+  gl.uniform3fv(loc.uSun,sun);
+  gl.uniform1f(loc.uFlat,ctx.flat?1:0);
+  gl.drawArrays(gl.TRIANGLES,0,ctx.count);
+  gl.disable(gl.SCISSOR_TEST);
+}
+
+return {M4,makeCtx,upload,drawScene};
+})();
+
+
+/* ============================================================================
+   Sightline mesh builder + ambient occlusion bake
+
+   Turns the scene's occluder boxes, ground and perimeter fence into a
+   triangle soup with a per-vertex AO term.
+
+   AO is computed on the CPU by hemisphere sampling with the same ray
+   intersection code the coverage model uses. That matters: the picture and
+   the percentages then come from one source of truth, so the render cannot
+   quietly disagree with the numbers.
+
+   Faces are tessellated rather than emitted as single quads. AO is a vertex
+   attribute, so a 25 ft wall drawn as two triangles would have no gradient
+   at all - the darkening under a roof or in a corner only appears if there
+   are vertices there to carry it.
+   ========================================================================== */
+
+const MESH = (() => {
+
+const hex=h=>[parseInt(h.slice(1,3),16)/255,
+              parseInt(h.slice(3,5),16)/255,
+              parseInt(h.slice(5,7),16)/255];
+
+/* ---------- ray intersection against the scene ---------- */
+// Mirrors the occlusion model: axis-aligned solids with bilinear top and
+// base surfaces, plus the vertical fence panels on the property boundary.
+function makeCaster(env){
+  const {boxes,prop,fence,baseAt,topAt,flatT,flatB}=env;
+  const solids=boxes.filter(b=>b.on);
+
+  function xySpan(ox,oy,dx,dy,b){
+    let t0=0,t1=Infinity;
+    for(const[o,d,lo,hi]of [[ox,dx,b.x0,b.x1],[oy,dy,b.y0,b.y1]]){
+      if(Math.abs(d)<1e-9){ if(o<lo||o>hi)return null; continue; }
+      let a=(lo-o)/d, z=(hi-o)/d; if(a>z){const s=a;a=z;z=s;}
+      if(a>t0)t0=a; if(z<t1)t1=z;
+      if(t0>t1)return null;
+    }
+    return [t0,t1];
+  }
+
+  // does anything block the segment from origin out to maxT?
+  return function occluded(ox,oy,oz,dx,dy,dz,maxT,ignore){
+    if(dz<-1e-9){
+      const t=-oz/dz;
+      if(t>1e-3&&t<maxT)return true;              // the ground itself
+    }
+    for(const b of solids){
+      if(b===ignore)continue;
+      const r=xySpan(ox,oy,dx,dy,b);
+      if(!r)continue;
+      const lo=Math.max(r[0],1e-3), hi=Math.min(r[1],maxT);
+      if(lo>=hi)continue;
+      if(flatT(b)&&flatB(b)){
+        const z0=b.zb[0],z1=b.zt[0];
+        let a=lo,z=hi;
+        if(Math.abs(dz)<1e-9){ if(oz<z0||oz>z1)continue; return true; }
+        let ta=(z0-oz)/dz, tb=(z1-oz)/dz;
+        if(ta>tb){const s=ta;ta=tb;tb=s;}
+        if(Math.max(a,ta)<=Math.min(z,tb))return true;
+      } else {
+        const N=14;
+        for(let i=0;i<=N;i++){
+          const t=lo+(hi-lo)*i/N;
+          const x=ox+dx*t,y=oy+dy*t,z=oz+dz*t;
+          if(z>=baseAt(b,x,y)&&z<=topAt(b,x,y))return true;
+        }
+      }
+    }
+    if(fence.on&&fence.h>0){
+      for(let i=0;i<prop.length;i++){
+        const [ax,ay]=prop[i],[bx,by]=prop[(i+1)%prop.length];
+        const ex=bx-ax, ey=by-ay, den=dx*ey-dy*ex;
+        if(Math.abs(den)<1e-9)continue;
+        const qx=ax-ox, qy=ay-oy;
+        const t=(qx*ey-qy*ex)/den, u=(qx*dy-qy*dx)/den;
+        if(t<=1e-3||t>=maxT||u<0||u>1)continue;
+        const z=oz+dz*t;
+        if(z>=0&&z<=fence.h)return true;
+      }
+    }
+    return false;
+  };
+}
+
+/* ---------- cosine-weighted hemisphere directions ---------- */
+const AO_DIRS=(()=>{
+  const N=24, out=[];
+  const golden=Math.PI*(3-Math.sqrt(5));
+  for(let i=0;i<N;i++){
+    const y=1-(i+0.5)/N;                    // 1 -> 0, cosine-ish weighting
+    const r=Math.sqrt(Math.max(0,1-y*y));
+    const th=golden*i;
+    out.push([Math.cos(th)*r, Math.sin(th)*r, y]);
+  }
+  return out;
+})();
+
+function basisFor(n){
+  const up=Math.abs(n[2])<0.9?[0,0,1]:[1,0,0];
+  let t=[up[1]*n[2]-up[2]*n[1], up[2]*n[0]-up[0]*n[2], up[0]*n[1]-up[1]*n[0]];
+  const l=Math.hypot(...t)||1; t=t.map(v=>v/l);
+  const b=[n[1]*t[2]-n[2]*t[1], n[2]*t[0]-n[0]*t[2], n[0]*t[1]-n[1]*t[0]];
+  return [t,b];
+}
+
+// AO_RADIUS sets how far a surface has to be from something before it stops
+// darkening. Too large and the whole scene greys out; too small and corners
+// stop reading as corners. 9 ft suits a domestic scene.
+const AO_RADIUS=9;
+
+function aoAt(occ,p,n,ignore){
+  const [t,b]=basisFor(n);
+  let open=0;
+  for(const d of AO_DIRS){
+    const w=[t[0]*d[0]+b[0]*d[1]+n[0]*d[2],
+             t[1]*d[0]+b[1]*d[1]+n[1]*d[2],
+             t[2]*d[0]+b[2]*d[1]+n[2]*d[2]];
+    const o=[p[0]+n[0]*0.06, p[1]+n[1]*0.06, p[2]+n[2]*0.06];
+    if(!occ(o[0],o[1],o[2],w[0],w[1],w[2],AO_RADIUS,ignore))open+=d[2];
+  }
+  let tot=0; for(const d of AO_DIRS)tot+=d[2];
+  return 0.25+0.75*(open/tot);        // never fully black
+}
+
+/* ---------- build ---------- */
+function build(env){
+  const {boxes,prop,fence,MAT,matOf,XY,TC,BC,baseAt,topAt,inProp,zmin,zmax}=env;
+  const occ=makeCaster(env);
+  const pos=[],nrm=[],col=[],ao=[];
+
+  // The scene model is left-handed (x east, y south, z up), GL is right-handed.
+  // Negate y on the way in and reverse triangle winding so normals, winding and
+  // face culling all stay consistent. Doing it here means nothing downstream
+  // has to know.
+  const push=(p,n,c,a)=>{pos.push(p[0],p[1],p[2]);nrm.push(n[0],n[1],n[2]);
+    col.push(c[0],c[1],c[2]);ao.push(a);};
+  const tri=(A,B,C,n,c,aA,aB,aC)=>{push(A,n,c,aA);push(B,n,c,aB);push(C,n,c,aC);};
+
+  // a quad, tessellated, with AO sampled per vertex
+  function quad(P,n,c,ignore,cell){
+    const w=Math.hypot(P[1][0]-P[0][0],P[1][1]-P[0][1],P[1][2]-P[0][2]);
+    const h=Math.hypot(P[3][0]-P[0][0],P[3][1]-P[0][1],P[3][2]-P[0][2]);
+    const NU=Math.max(1,Math.min(10,Math.round(w/(cell||2.5))));
+    const NV=Math.max(1,Math.min(10,Math.round(h/(cell||2.5))));
+    const at=(u,v)=>{
+      const a=[P[0][0]+(P[1][0]-P[0][0])*u, P[0][1]+(P[1][1]-P[0][1])*u, P[0][2]+(P[1][2]-P[0][2])*u];
+      const b=[P[3][0]+(P[2][0]-P[3][0])*u, P[3][1]+(P[2][1]-P[3][1])*u, P[3][2]+(P[2][2]-P[3][2])*u];
+      return [a[0]+(b[0]-a[0])*v, a[1]+(b[1]-a[1])*v, a[2]+(b[2]-a[2])*v];
+    };
+    const grid=[],aog=[];
+    for(let i=0;i<=NU;i++){grid.push([]);aog.push([]);
+      for(let j=0;j<=NV;j++){
+        const p=at(i/NU,j/NV);
+        grid[i].push(p); aog[i].push(aoAt(occ,p,n,ignore));
+      }}
+    for(let i=0;i<NU;i++)for(let j=0;j<NV;j++){
+      const a=grid[i][j],b=grid[i+1][j],c2=grid[i+1][j+1],d=grid[i][j+1];
+      const aa=aog[i][j],ab=aog[i+1][j],ac=aog[i+1][j+1],ad=aog[i][j+1];
+      tri(a,b,c2,n,c,aa,ab,ac);
+      tri(a,c2,d,n,c,aa,ac,ad);
+    }
+  }
+
+  const outward=(b,P)=>{
+    const u=[P[1][0]-P[0][0],P[1][1]-P[0][1],P[1][2]-P[0][2]];
+    const v=[P[2][0]-P[0][0],P[2][1]-P[0][1],P[2][2]-P[0][2]];
+    let n=[u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0]];
+    const l=Math.hypot(...n)||1; n=n.map(q=>q/l);
+    const fc=[0,1,2].map(k=>P.reduce((s,q)=>s+q[k],0)/P.length);
+    const bc=[(b.x0+b.x1)/2,(b.y0+b.y1)/2,(zmin(b)+zmax(b))/2];
+    const d=(fc[0]-bc[0])*n[0]+(fc[1]-bc[1])*n[1]+(fc[2]-bc[2])*n[2];
+    return d<0?n.map(q=>-q):n;
+  };
+  // wind a quad so its front face matches the outward normal
+  const wound=(P,n)=>{
+    const u=[P[1][0]-P[0][0],P[1][1]-P[0][1],P[1][2]-P[0][2]];
+    const v=[P[2][0]-P[0][0],P[2][1]-P[0][1],P[2][2]-P[0][2]];
+    const c=[u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0]];
+    return (c[0]*n[0]+c[1]*n[1]+c[2]*n[2])>=0?P:[P[0],P[3],P[2],P[1]];
+  };
+
+  /* structures */
+  boxes.forEach(b=>{
+    if(!b.on)return;
+    const c=hex(matOf(b));
+    const T=TC(b), B=BC(b);
+    const faces=[
+      [T[0],T[1],T[2],T[3]],                                        // top
+      [B[0],B[1],B[2],B[3]],                                        // base
+      [B[0],B[1],T[1],T[0]],                                        // y0
+      [B[3],B[2],T[2],T[3]],                                        // y1
+      [B[0],B[3],T[3],T[0]],                                        // x0
+      [B[1],B[2],T[2],T[1]]                                         // x1
+    ];
+    faces.forEach(P=>{
+      const n=outward(b,P);
+      quad(wound(P,n),n,c,b,2.2);
+    });
+  });
+
+  /* ground: a grid clipped to the property, skipping building footprints */
+  {
+    const c=hex(MAT.grass);
+    const xs=prop.map(p=>p[0]), ys=prop.map(p=>p[1]);
+    const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys);
+    const step=4.5, n=[0,0,1];
+    const under=(x,y)=>boxes.some(b=>b.on&&x>b.x0&&x<b.x1&&y>b.y0&&y<b.y1&&zmin(b)<=0.05);
+    for(let x=x0;x<x1;x+=step)for(let y=y0;y<y1;y+=step){
+      const cx=x+step/2, cy=y+step/2;
+      if(!inProp(cx,cy)||under(cx,cy))continue;
+      quad([[x,y,0],[x+step,y,0],[x+step,y+step,0],[x,y+step,0]],n,c,null,2.5);
+    }
+  }
+
+  /* perimeter fence, both sides */
+  if(fence.on&&fence.h>0){
+    const c=hex(MAT.wood);
+    for(let i=0;i<prop.length;i++){
+      const [ax,ay]=prop[i],[bx,by]=prop[(i+1)%prop.length];
+      const ex=bx-ax, ey=by-ay, l=Math.hypot(ex,ey)||1;
+      const n=[ey/l,-ex/l,0];
+      quad([[ax,ay,0],[bx,by,0],[bx,by,fence.h],[ax,ay,fence.h]],n,c,null,3);
+      const n2=n.map(q=>-q);
+      quad([[bx,by,0],[ax,ay,0],[ax,ay,fence.h],[bx,by,fence.h]],n2,c,null,3);
+    }
+  }
+
+  return {pos,nrm,col,ao,verts:pos.length/3};
+}
+
+return {build,makeCaster,AO_RADIUS};
+})();
+
+
 const NS='http://www.w3.org/2000/svg';
 const $=i=>document.getElementById(i);
 const rad=d=>d*Math.PI/180, deg=r=>r*180/Math.PI;
@@ -202,9 +688,16 @@ const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const el=(n,at={})=>{const e=document.createElementNS(NS,n);for(const k in at)e.setAttribute(k,at[k]);return e;};
 const txt=(at,s)=>{const e=el('text',at);e.textContent=s;return e;};
 
+// Frame shape comes from the sensor, which is a hard fact; the field of view
+// fills it. Reolink quote 88x41.5 on a 16:9 sensor and 189x55 on 32:9, and
+// neither pair reconciles with a rectilinear projection - 88 across 16:9 would
+// need 69 vertical, not 41.5. These are wide lenses with barrel distortion, so
+// the recorded image simply is not rectilinear. Modelling it as linear in
+// bearing and tangent in elevation, stretched to the sensor, is closer to what
+// they actually produce than pretending it is a pinhole.
 const LENS={
-  ptz:{f:88 ,vf:41.5,r:40,label:'E1 SE PTZ 88°'},
-  duo:{f:180,vf:55  ,r:65,label:'Duo 3/3V 180°'}
+  ptz:{f:88 ,vf:41.5,r:40,sensor:3840/2160,label:'E1 SE PTZ 88°'},
+  duo:{f:189,vf:55  ,r:65,sensor:7680/2160,label:'Duo 3/3V 189°'}
 };
 const lensOf=c=>LENS[c.lens||'ptz'];
 const PAL=['#E8A33D','#4FB3C4','#C97FA0','#93BF63','#B49BE0','#E0785C','#63BFA6','#D9C25E'];
@@ -301,6 +794,7 @@ function fenceDist(ox,oy,oz,dx,dy,dz,max){
   }
   return best;
 }
+let GLON=true;
 let cams=DEF_CAMS(), boxes=DEF_BOXES(), sel=null, selBox=null, mode='2d', splat=null, frusta=null, povMax=null;
 function polyArea(){
   let a=0;
@@ -401,15 +895,40 @@ function stops(c){
   if((c.lens||'ptz')!=='ptz'||!c.tour||!c.tour.length)return [home];
   return [home,...c.tour];
 }
-const cycle=c=>stops(c).reduce((s,k)=>s+(k.d||0),0);
+// Bounce playback: 1 -> 2 -> 3 -> 2 -> 1, not 1 -> 2 -> 3 -> 1.
+// A real PT head has to travel back through the middle anyway, so a wrap
+// straight from the last stop to the first is a fiction that also leaves
+// the far side of the arc unwatched for the whole return swing.
+function order(c){
+  const S=stops(c), n=S.length;
+  if(n<3)return [...Array(n).keys()];
+  // Sweep in bearing order, not list order. Sorting by signed offset from the
+  // home position means the head travels monotonically to one end and back
+  // instead of lurching past a stop and returning to it.
+  const off=i=>((S[i].a-S[0].a+540)%360)-180;
+  const f=[...Array(n).keys()].sort((a,b)=>off(a)-off(b));
+  return f.concat(f.slice(1,-1).reverse());
+}
+// how many times each stop is visited per cycle, for duty-cycle maths
+function visits(c){
+  const w=new Array(stops(c).length).fill(0);
+  order(c).forEach(i=>w[i]++);
+  return w;
+}
+const cycle=c=>{
+  const S=stops(c), o=order(c);
+  return Math.round(o.reduce((s,i)=>s+(S[i].d||0),0)+o.length*MOVE);
+};
 // best quality anywhere in the circuit, plus the share of the cycle it's covered
 function swept(c,x,y,tz){
-  const S=stops(c); let q=0,seen=0,tot=0;
-  for(const k of S){
+  const S=stops(c), w=visits(c);
+  let q=0,seen=0,tot=0;
+  S.forEach((k,i)=>{
+    const d=(k.d||0)*w[i];              // middle stops are visited twice
+    tot+=d;
     const v=qual(c,x,y,tz,k.a,k.t);
-    tot+=k.d||0;
-    if(v){seen+=k.d||0; if(v>q)q=v;}
-  }
+    if(v){seen+=d; if(v>q)q=v;}
+  });
   return {q,frac:tot?seen/tot:0};
 }
 function quality(c,x,y,tz){
@@ -941,7 +1460,33 @@ function clip2D(poly,fn){
   }
   return out;
 }
-function drawPOV(c,svgEl,VW,VH){
+function drawPOVOverlay(c,svgEl,VW,VH){
+  svgEl.textContent='';
+  svgEl.setAttribute('viewBox',`0 0 ${VW} ${VH}`);
+  const B=camBasis(c,c.a,c.t||0);
+  cams.forEach(o=>{
+    if(o===c||!o.on)return;
+    const p=toCam(c,B,[o.x,o.y,o.z]);
+    if(p[2]<0.3)return;
+    const sp=povScreen(c,p,VW,VH);
+    if(sp[0]<0||sp[0]>VW||sp[1]<0||sp[1]>VH)return;
+    svgEl.append(el('circle',{cx:sp[0],cy:sp[1],r:4,fill:'none',
+      stroke:colC(o),'stroke-width':1.8}));
+    svgEl.append(txt({x:sp[0],y:sp[1]-7,'text-anchor':'middle',fill:colC(o),
+      'font-family':'var(--mono)','font-size':9},o.id));
+  });
+  const housing=boxes.filter(b=>b.on&&c.x>b.x0&&c.x<b.x1&&c.y>b.y0&&c.y<b.y1&&
+    c.z>=baseAt(b,c.x,c.y)-0.02&&c.z<=topAt(b,c.x,c.y)+0.02);
+  svgEl.append(el('rect',{x:0,y:0,width:VW,height:16,fill:'rgba(11,15,20,.62)'}));
+  svgEl.append(txt({x:8,y:12,fill:colC(c),'font-family':'var(--mono)','font-size':10,
+    'font-weight':500},`${c.id} · ${c.name}`));
+  svgEl.append(el('rect',{x:0,y:VH-14,width:VW,height:14,fill:'rgba(11,15,20,.62)'}));
+  svgEl.append(txt({x:8,y:VH-4,fill:'#B9C0C9','font-family':'var(--mono)','font-size':8},
+    `aim ${Math.round(c.a)}° · tilt ${Math.round(c.t)}° · ${lensOf(c).f}° lens`+
+    (housing.length?` · in ${housing.map(b=>b.name).join(', ')}`:'')));
+}
+
+function drawPOV_svg_unused(c,svgEl,VW,VH){
   svgEl.textContent='';
   svgEl.setAttribute('viewBox',`0 0 ${VW} ${VH}`);
   const B=camBasis(c,c.a,c.t||0);
@@ -1032,6 +1577,9 @@ function drawPOV(c,svgEl,VW,VH){
     `aim ${Math.round(c.a)}° · tilt ${Math.round(c.t)}° · ${lensOf(c).f}° lens`+
     (housing.length?` · mounted in ${housing.map(b=>b.name).join(', ')}`:'')));
 }
+// width:height that renders the modelled FOV with square pixels
+// the frame is the sensor's shape; the FOV is mapped to fill it
+function lensAspect(c){ return lensOf(c).sensor; }
 const STEP=2;
 let holdTimer=null;
 function nudge(c,da,dt){
@@ -1068,25 +1616,64 @@ function makeDpad(c){
     mk('d','▼','tilt down', ()=>nudge(c,0,STEP)));
   return d;
 }
+let povRO=null;
+function watchCells(){
+  if(!povRO&&typeof ResizeObserver!=='undefined')
+    povRO=new ResizeObserver(entries=>{
+      entries.forEach(en=>{
+        const cam=cams.find(c=>c.id===en.target.dataset.cam);
+        const cv=en.target.querySelector('canvas');
+        if(cam&&cv&&cv.style.display!=='none')renderPOVGL(cam,cv);
+      });
+    });
+  return povRO;
+}
 function renderPOV(){
-  const wrap=$('povgrid'); wrap.textContent='';
+  const wrap=$('povgrid');
   const live=cams.filter(c=>c.on);
   const maxed=povMax&&live.find(c=>c.id===povMax);
   const list=maxed?[maxed]:live;
+  const sig=list.map(c=>c.id+':'+(c.lens||'ptz')).join(',')+'|'+mode+'|'+(maxed?'max':'');
+  if(wrap.dataset.sig===sig){
+    // same cells: just redraw them, keeping the GL contexts alive
+    list.forEach(c=>{
+      const cell=wrap.querySelector(`.povcell[data-cam="${c.id}"]`);
+      if(!cell)return;
+      const cvs=cell.querySelector('canvas'), sv=cell.querySelector('svg');
+      const wide=(c.lens||'ptz')==='duo';
+      if(renderPOVGL(c,cvs)){ cvs.style.display=''; drawPOVOverlay(c,sv,wide?1280:640,400); }
+      else { cvs.style.display='none'; drawPOV_svg_unused(c,sv,wide?1280:640,400); }
+    });
+    return;
+  }
+  wrap.dataset.sig=sig;
+  wrap.textContent='';
   wrap.classList.toggle('one',!!maxed||mode==='split');
   wrap.style.gridTemplateColumns=(maxed||mode==='split')?'1fr':(live.length<=2?'1fr':'1fr 1fr');
   list.forEach(c=>{
     const wide=(c.lens||'ptz')==='duo';
     const cell=document.createElement('div');
     cell.className='povcell'+(wide?' wide':'');
+    cell.style.aspectRatio=String(lensAspect(c));
+    const cvs=document.createElement('canvas');
+    cell.append(cvs);
     const sv=document.createElementNS(NS,'svg');
     sv.setAttribute('preserveAspectRatio','none');
     cell.append(sv);
     cell.onclick=()=>{povMax=povMax===c.id?null:c.id;renderPOV();};
     cell.title=povMax?'click to show all cameras':'click to maximise';
     cell.append(makeDpad(c));
+    cell.dataset.cam=c.id;
     wrap.append(cell);
-    drawPOV(c,sv,wide?1280:640,400);
+    const ro=watchCells(); if(ro)ro.observe(cell);
+    requestAnimationFrame(()=>{
+      if(renderPOVGL(c,cvs)){
+        drawPOVOverlay(c,sv,wide?1280:640,400);
+      } else {
+        cvs.style.display='none';
+        drawPOV_svg_unused(c,sv,wide?1280:640,400);   // SVG fallback
+      }
+    });
   });
 }
 
@@ -1123,6 +1710,7 @@ function draw3d(){
   v3.textContent='';
   const g=el('g'); v3.append(g);
   const items=[];
+  if(!GLON){
   // grass inside the boundary
   {
     const dfs=el('defs');
@@ -1152,8 +1740,9 @@ function draw3d(){
           fill:shade(normalOf(W3),MAT.wood),stroke:MAT.woodDark,'stroke-width':.8})});
     }
   }
+  }
   // ground grid
-  for(let v=-30;v<=65;v+=5){
+  if(!GLON)for(let v=-30;v<=65;v+=5){
     const a=proj(v,-30,0),b=proj(v,60,0),c=proj(-30,v,0),d=proj(60,v,0);
     items.push({d:-1e6,e:el('line',{x1:a.x,y1:a.y,x2:b.x,y2:b.y,stroke:'#1E2732','stroke-width':1})});
     items.push({d:-1e6,e:el('line',{x1:c.x,y1:c.y,x2:d.x,y2:d.y,stroke:'#1E2732','stroke-width':1})});
@@ -1177,7 +1766,7 @@ function draw3d(){
   boxes.forEach(b=>{
     if(!b.on)return;
     const isSel=selBox===b.id;
-    FACES.forEach(f=>{
+    if(!GLON)FACES.forEach(f=>{
       const W3=f.pts(b);
       const P=W3.map(([x,y,z])=>proj(x,y,z));
       const dep=P.reduce((s,p)=>s+p.d,0)/4;
@@ -1236,10 +1825,103 @@ function draw3d(){
   items.sort((a,b)=>a.d-b.d).forEach(i=>g.append(i.e));
 }
 
+/* ---------------- WebGL scene ---------------- */
+let glCtx=null, glCells=new Map(), meshCache=null, meshKey='';
+function sceneKey(){
+  return JSON.stringify([boxes.map(b=>[b.on,b.x0,b.y0,b.x1,b.y1,b.zb,b.zt,b.name]),
+                         prop,fence]);
+}
+function env(){
+  return {boxes,prop,fence,MAT,matOf,XY,TC,BC,baseAt,topAt,inProp,zmin,zmax,
+          flatT,flatB};
+}
+function ensureMesh(){
+  const k=sceneKey();
+  if(meshCache&&k===meshKey)return meshCache;
+  const t0=performance.now();
+  meshCache=MESH.build(env()); meshKey=k;
+  meshCache.ms=Math.round(performance.now()-t0);
+  return meshCache;
+}
+const SUNV=new Float32Array(SUN);
+const SKYT=[0.29,0.49,0.71], SKYB=[0.61,0.77,0.89];
+
+// A WebGL context is bound to one canvas element for life, and browsers cap
+// how many can exist at once. Caching by camera id while rebuilding the
+// canvases meant every redraw leaked a context and handed back a stale one.
+function glReady(canvas){
+  if(!canvas.__ctx){
+    const c=GL.makeCtx(canvas);
+    if(!c)return null;
+    c.uploaded=''; canvas.__ctx=c;
+  }
+  return canvas.__ctx;
+}
+function sizeCanvas(cv){
+  const r=cv.getBoundingClientRect();
+  const dpr=Math.min(devicePixelRatio||1,2);
+  const w=Math.max(1,Math.round(r.width*dpr)), h=Math.max(1,Math.round(r.height*dpr));
+  if(cv.width!==w||cv.height!==h){cv.width=w;cv.height=h;}
+  return [w,h];
+}
+// orbit parameters shared with the old SVG view
+function orbitEye(){
+  const A=rad(az), E=rad(elv);
+  const dist=95/Math.max(zoom,0.2);
+  const cx=12.5+panX*0, cy=12.5+panY*0;
+  return {eye:[cx+dist*Math.cos(E)*Math.sin(A), cy+dist*Math.cos(E)*Math.cos(A), dist*Math.sin(E)],
+          at:[cx,cy,6]};
+}
+let glFailed=false;
+function render3DGL(){
+  if(glFailed||typeof GL==='undefined')return false;
+  try{ return render3DGL_();}catch(err){
+    glFailed=true; console.warn('WebGL unavailable, falling back to SVG:',err.message);
+    $('gl3d').style.display='none'; return false;
+  }
+}
+function render3DGL_(){
+  const cv=$('gl3d');
+  const [w,h]=sizeCanvas(cv);
+  const c=glReady(cv); if(!c)return false;
+  const m=ensureMesh();
+  if(c.uploaded!==meshKey){GL.upload(c,m);c.uploaded=meshKey;}
+  const {eye,at}=orbitEye();
+  const proj=GL.M4.perspective(38,w/h,0.5,600);
+  const view=GL.M4.lookAtLH(eye,at,[0,0,1]);
+  GL.drawScene(c,GL.M4.mul(proj,view),SUNV,SKYT,SKYB,[0,0,w,h]);
+  return true;
+}
+function renderPOVGL(cam,cv){
+  if(glFailed||typeof GL==='undefined')return false;
+  try{ return renderPOVGL_(cam,cv);}catch(err){ glFailed=true; return false; }
+}
+function renderPOVGL_(cam,cv){
+  const [w,h]=sizeCanvas(cv);
+  const c=glReady(cv); if(!c)return false;
+  const m=ensureMesh();
+  if(c.uploaded!==meshKey){GL.upload(c,m);c.uploaded=meshKey;}
+  const L=lensOf(cam);
+  const eye=[cam.x,cam.y,cam.z];
+  const t=rad(cam.t||0), a=rad(cam.a);
+  const at=[eye[0]+Math.cos(a)*Math.cos(t)*10,
+            eye[1]+Math.sin(a)*Math.cos(t)*10,
+            eye[2]-Math.sin(t)*10];
+  const view=GL.M4.lookAtLH(eye,at,[0,0,1]);
+  // One pass, one projection for every lens. Horizontal fills the width,
+  // vertical fills the height, so the frame is the sensor shape and the FOV is
+  // exactly what the coverage model uses. A perspective divide could not do
+  // this anyway - it cannot reach 180 degrees, let alone past it.
+  GL.drawScene(c,view,SUNV,SKYT,SKYB,[0,0,w,h],
+    {view,halfH:rad(L.f/2),halfV:rad(L.vf/2),far:400});
+  return true;
+}
+
 /* ---------------- render ---------------- */
 let coarse=false;
 function render(){
   T=fit();
+  if(mode!=='3d')$('gl3d').style.display='none';
   if(mode==='pov'){
     cov.style.display='none'; svg.style.display='none'; v3.style.display='none';
     renderPOV();
@@ -1256,7 +1938,9 @@ function render(){
     cov.style.display=heat?'':'none'; svg.style.display=''; v3.style.display='none';
     if(heat)paintCoverage(coarse);
     drawPlan(); }
-  else if(mode==='3d'){ cov.style.display='none'; svg.style.display='none'; v3.style.display='';
+  else if(mode==='3d'){ cov.style.display='none'; svg.style.display='none';
+    $('gl3d').style.display=''; v3.style.display='';
+    GLON=render3DGL();
     splat=(!playing&&$('tSplat').checked)?buildSplat():null;
     frusta=(!playing&&$('tFrus').checked)?buildFrusta():null;
     draw3d(); }
@@ -1443,6 +2127,7 @@ v3.addEventListener('pointermove',e=>{
     az=orbit.az+(e.clientX-orbit.x)*0.35;
     elv=clamp(orbit.elv+(e.clientY-orbit.y)*0.28,6,86);
   }
+  if(GLON)render3DGL();
   draw3d();
 });
 ['pointerup','pointercancel'].forEach(v=>v3.addEventListener(v,()=>{
@@ -1454,6 +2139,7 @@ v3.addEventListener('wheel',e=>{e.preventDefault();
   const z0=zoom; zoom=clamp(zoom*(e.deltaY>0?0.93:1.075),0.25,6);
   const k=zoom/z0;
   panX-=mx*(k-1); panY-=my*(k-1);
+  if(GLON)render3DGL();
   draw3d();},{passive:false});
 
 function setMode(m){
@@ -1497,7 +2183,8 @@ function list(){
     h.innerHTML=`<div class="b"><div class="id">${c.id} · ${lensOf(c).label}</div>
       <div class="nm">${c.name}</div><div class="mt">${c.note}<br>
       x ${c.x} · y ${c.y} · ${c.z} ft · aim ${c.a}° · tilt ${c.t}°${
-        (c.tour&&c.tour.length)?`<br>PT circuit: ${stops(c).length} stops, ${cycle(c)}s cycle`:''}
+        (c.tour&&c.tour.length)?`<br>PT circuit: ${stops(c).length} stops, ${cycle(c)}s${
+          stops(c).length>2?' bounce':''}`:''}
       ${lo?`<br><b>${lo}</b>`:''}</div></div>`;
     const eye=document.createElement('button'); eye.className='eye';
     eye.textContent=c.on?'●':'○';
@@ -1525,7 +2212,9 @@ function list(){
       const hdr=document.createElement('div');
       hdr.style.cssText='font-family:var(--mono);font-size:9.5px;color:var(--dim);margin:8px 0 4px;letter-spacing:.1em';
       const cyc=cycle(c);
-      hdr.textContent=`PT CIRCUIT · ${stops(c).length} stops · ${cyc}s cycle`;
+      const n=stops(c).length;
+      hdr.textContent=`PT CIRCUIT · ${n} stops · ${cyc}s cycle`+
+        (n>2?' · bounce':'');
       ed.append(hdr);
       ed.append(numFld('home s',c.hd||20,v=>c.hd=Math.max(1,v),1));
       (c.tour||[]).forEach((kf,i)=>{
@@ -1552,7 +2241,7 @@ function list(){
       add.title='Capture the current aim and tilt as a circuit stop';
       add.onclick=()=>{
         c.tour=c.tour||[];
-        if(c.tour.length>=3){toast('3 extra stops is the cap');return;}
+        if(c.tour.length>=2){toast('3 stops total is the cap');return;}
         const last=c.tour.length?c.tour[c.tour.length-1].a:c.a;
         c.tour.push({a:norm(last+60),t:c.t||15,d:8});
         render();list();};
@@ -1799,10 +2488,10 @@ const MOVE=1.5;                       // seconds to swing between stops
 let speed=4;                          // playback multiplier
 let playing=false, t0=0, snap=null, lastFrame=0;
 function timeline(c){
-  const S=stops(c), seg=[];
-  S.forEach((k,i)=>{
+  const S=stops(c), o=order(c), seg=[];
+  o.forEach((idx,j)=>{
+    const k=S[idx], n=S[o[(j+1)%o.length]];
     seg.push({kind:'hold',a:k.a,t:k.t,dur:k.d||8});
-    const n=S[(i+1)%S.length];
     seg.push({kind:'move',a0:k.a,t0:k.t,a1:n.a,t1:n.t,dur:MOVE});
   });
   return seg;
