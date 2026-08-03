@@ -173,7 +173,7 @@ $('msplit').onclick=()=>{setMode('split');
   $('hint').textContent='Plan and camera views together · click a panel to maximise it';
   render();};
 $('mpov').onclick=()=>{setMode('pov');
-  $('hint').textContent='Each camera\'s own view · click a panel to maximise · frustums are hidden here';
+  $('hint').textContent='Drag a view to pan and tilt · the magnifier fills the stage · frustums are hidden here';
   render();};
 $('m2d').onclick=()=>{setMode('2d');
   $('hint').textContent='Scroll to zoom · drag background to pan · drag box corners to resize, ✛ to move it';render();};

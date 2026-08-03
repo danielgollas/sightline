@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.4.3
+
+### Dragging a camera view is now the default, and tracks properly
+The hand tool is gone. Dragging anywhere on a camera view pans and tilts it -
+no arming, no mode - and the cursor is a four-way move arrow, with a matching
+icon in the corner as a quiet hint that the view is draggable.
+
+The reason the first version felt wrong was a real defect, not a preference.
+A camera frame is linear in BEARING but tangent in ELEVATION - that is the
+cylindrical projection that lets a 189 degree lens be drawn at all. The drag
+treated both axes as linear, so horizontal tracked the pointer while vertical
+drifted away from it, and drifted further the further you were from the middle
+of frame.
+
+Both press and current pointer position are now converted into angles through
+the actual projection, and the camera rotates by the difference. Whatever you
+grab stays under the cursor, anywhere in frame, on both axes - verified to
+within the 0.1 degree that tilt is deliberately quantised to.
+
+### Tile / fullscreen toggle
+A magnifier button on each view, plus for fullscreen and minus for back to
+tiled. It takes over the click-to-maximise that used to live on the whole
+cell, which had to go: the cell is a drag surface now, and a stray click at
+the end of a drag should not rearrange the grid.
+
+Fullscreen centres the view and grows it to the largest size that still fits
+the stage. A camera frame has the sensor's fixed aspect, so filling both axes
+is not on offer - filling one and centring on the other is.
+
+### Fixed while building this
+- `.povcell svg` styled every SVG inside a cell, not just the overlay, so the
+  icons inside the new button and hint were stretched to fill the cell and
+  collapsed to zero. Scoped to the direct child.
+- A maximised cell briefly sized itself to 7x2 px: `margin:0 auto` makes a
+  grid item shrink-to-fit, and both the canvas and the overlay inside are
+  absolutely positioned, so there is nothing to measure. It takes an explicit
+  width.
+
 ## 0.4.2
 
 ### The 3D overlay did not line up with the 3D view

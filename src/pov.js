@@ -279,10 +279,32 @@ function nudge(c,da,dt){
   render(); list();
 }
 
-/* ---------------- the hand: drag to pan and tilt ---------------- */
-// Redraw one cell rather than the whole app. A full render() re-marches cones
-// and repaints the plan, which is far too much for a pointer-move; the plan
-// and the coverage figures catch up once the drag ends.
+/* ---------------- drag the viewport to pan and tilt ---------------- */
+/*
+   Dragging is the default interaction on a camera view - no arming, no mode.
+
+   The gearing inverts the actual projection rather than assuming the frame is
+   linear in both axes. It is not: the camera image is linear in BEARING but
+   tangent in ELEVATION, which is what makes a 189 degree lens representable at
+   all. Treating the vertical as linear made the scene slide away from the
+   pointer, more so further from the centre of frame, which is what made the
+   first version of this feel wrong.
+
+   Converting both the press and the current pointer position into angles and
+   rotating by the difference keeps whatever you grabbed under the cursor, on
+   both axes, anywhere in frame.
+*/
+// Screen position within a cell -> angle offsets from the camera's axis.
+// phi is bearing (linear across the width), eps is elevation, positive up.
+function frameAngles(c,fx,fy){
+  const S=specOf(c);
+  const phi=(fx-0.5)*S.fovH;
+  const eps=deg(Math.atan((0.5-fy)*2*Math.tan(rad(S.fovV/2))));
+  return {phi,eps};
+}
+// Redraw one cell rather than the whole app. A full render would re-march the
+// coverage cones and repaint the plan on every pointer-move; the plan and the
+// figures catch up when the drag ends.
 function redrawCell(c,cell){
   const cvs=cell.querySelector('canvas'), sv=cell.querySelector('svg');
   const wide=isWide(c);
@@ -290,65 +312,76 @@ function redrawCell(c,cell){
   else { cvs.style.display='none'; drawPOV_svg_unused(c,sv,wide?1280:640,400); }
 }
 let _limitToast=0;
-function handDrag(cell,c){
+function dragAim(cell,c){
   let d=null;
   cell.addEventListener('pointerdown',e=>{
-    if(!cell.classList.contains('grab'))return;
-    if(e.target.closest('.dpad')||e.target.closest('.handbtn'))return;
-    d={x:e.clientX,y:e.clientY,a:c.a,t:c.t||0,
-       w:cell.clientWidth||1,h:cell.clientHeight||1,moved:false};
+    if(e.target.closest('.dpad')||e.target.closest('.zoombtn'))return;
+    const r=cell.getBoundingClientRect();
+    if(!r.width||!r.height)return;
+    const A=frameAngles(c,(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height);
+    d={r,phi0:A.phi,eps0:A.eps,a0:c.a,t0:c.t||0,moved:false};
     // Capture keeps the drag alive if the pointer leaves the cell. It can
     // throw when there is no active pointer with this id, and a failed
     // capture must not abort the drag.
     try{ cell.setPointerCapture(e.pointerId); }catch(_){}
-    cell.classList.add('grabbing');
-    e.preventDefault(); e.stopPropagation();
+    cell.classList.add('dragging');
+    e.preventDefault();
   });
   cell.addEventListener('pointermove',e=>{
     if(!d)return;
-    const S=specOf(c);
-    const dx=e.clientX-d.x, dy=e.clientY-d.y;
-    if(Math.abs(dx)+Math.abs(dy)>3)d.moved=true;
-    // Grab semantics: the scene follows the hand, so dragging right turns the
-    // camera left. Dragging the full width of the frame sweeps one full
-    // horizontal field of view, which makes the gearing feel 1:1.
-    const hit=aimTo(c, d.a - dx/d.w*S.fovH, d.t - dy/d.h*S.fovV);
+    const A=frameAngles(c,(e.clientX-d.r.left)/d.r.width,(e.clientY-d.r.top)/d.r.height);
+    if(Math.abs(A.phi-d.phi0)+Math.abs(A.eps-d.eps0)>0.3)d.moved=true;
+    // Rotate by the difference so the grabbed direction stays under the
+    // cursor. Down-tilt is positive, elevation is positive up, hence the sign.
+    const hit=aimTo(c, d.a0-(A.phi-d.phi0), d.t0+(A.eps-d.eps0));
     redrawCell(c,cell);
     if((hit.pan||hit.tilt) && performance.now()-_limitToast>1200){
       _limitToast=performance.now();
       toast(hit.tilt?`${c.id} is at its tilt limit`:`${c.id} is at its pan limit`);
     }
   });
-  ['pointerup','pointercancel'].forEach(v=>cell.addEventListener(v,e=>{
+  ['pointerup','pointercancel'].forEach(v=>cell.addEventListener(v,()=>{
     if(!d)return;
     const moved=d.moved; d=null;
-    cell.classList.remove('grabbing');
+    cell.classList.remove('dragging');
     if(moved){ render(); list(); }      // now catch the plan and the figures up
   }));
 }
-function makeHand(c){
+// Tile / fullscreen toggle. This took over the click-to-maximise that used to
+// live on the whole cell, because the cell itself is now a drag surface and a
+// stray click at the end of a drag should not rearrange the grid.
+const ZOOM_IN='<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">'+
+  '<circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/>'+
+  '<path d="M10.4 10.4 L14 14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>'+
+  '<path d="M7 4.8 v4.4 M4.8 7 h4.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+const ZOOM_OUT='<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">'+
+  '<circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/>'+
+  '<path d="M10.4 10.4 L14 14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>'+
+  '<path d="M4.8 7 h4.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+function makeZoom(c){
   const b=document.createElement('button');
-  b.className='handbtn'; b.textContent='\u270B';
-  b.title='Hand: drag the view to pan and tilt this camera';
-  b.setAttribute('aria-pressed','false');
+  b.className='zoombtn';
+  const maxed=povMax===c.id;
+  b.innerHTML=maxed?ZOOM_OUT:ZOOM_IN;
+  b.title=maxed?'Back to the tiled view':'Fill the stage with this camera';
+  b.setAttribute('aria-label',b.title);
   b.onclick=e=>{
     e.stopPropagation();
-    const cell=b.closest('.povcell');
-    const on=b.getAttribute('aria-pressed')==='true';
-    b.setAttribute('aria-pressed',String(!on));
-    cell.classList.toggle('grab',!on);
+    povMax=povMax===c.id?null:c.id;
+    renderPOV();
   };
-  // Pressing the hand and dragging straight off it works too, without having
-  // to click it first - that is what "click and drag" means to most people.
-  b.addEventListener('pointerdown',e=>{
-    const cell=b.closest('.povcell');
-    if(!cell.classList.contains('grab')){
-      cell.classList.add('grab');
-      b.setAttribute('aria-pressed','true');
-    }
-    e.stopPropagation();
-  });
+  b.addEventListener('pointerdown',e=>e.stopPropagation());
   return b;
+}
+// A quiet hint that the view is draggable. Not a control - the whole cell is.
+const PAN_ICON='<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">'+
+  '<path d="M8 1.6 L8 14.4 M1.6 8 L14.4 8" stroke="currentColor" stroke-width="1.4"/>'+
+  '<path d="M8 1.2 l2 2.2 h-4 z M8 14.8 l2 -2.2 h-4 z M1.2 8 l2.2 2 v-4 z M14.8 8 l-2.2 2 v-4 z" fill="currentColor"/></svg>';
+function makePanHint(){
+  const d=document.createElement('div');
+  d.className='panhint'; d.innerHTML=PAN_ICON;
+  d.title='Drag the view to pan and tilt';
+  return d;
 }
 function makeDpad(c){
   const d=document.createElement('div'); d.className='dpad';
@@ -410,26 +443,26 @@ function renderPOV(){
   wrap.dataset.sig=sig;
   wrap.textContent='';
   wrap.classList.toggle('one',!!maxed||mode==='split');
+  wrap.classList.toggle('max',!!maxed);
   wrap.style.gridTemplateColumns=(maxed||mode==='split')?'1fr':(live.length<=2?'1fr':'1fr 1fr');
   list.forEach(c=>{
     const wide=isWide(c);
     const cell=document.createElement('div');
     cell.className='povcell'+(wide?' wide':'');
-    cell.style.aspectRatio=String(lensAspect(c));
+    const ar=lensAspect(c);
+    cell.style.aspectRatio=String(ar);
+    cell.style.setProperty('--ar',String(ar));
     const cvs=document.createElement('canvas');
     cell.append(cvs);
     const sv=document.createElementNS(NS,'svg');
     sv.setAttribute('preserveAspectRatio','none');
     cell.append(sv);
-    cell.onclick=e=>{
-      if(cell.classList.contains('grab'))return;   // the hand owns the drag
-      povMax=povMax===c.id?null:c.id;renderPOV();
-    };
-    cell.title=povMax?'click to show all cameras':'click to maximise';
+    cell.title='Drag to pan and tilt';
     cell.append(makeDpad(c));
-    cell.append(makeHand(c));
+    cell.append(makeZoom(c));
+    cell.append(makePanHint());
     cell.dataset.cam=c.id;
-    handDrag(cell,c);
+    dragAim(cell,c);
     wrap.append(cell);
     const ro=watchCells(); if(ro)ro.observe(cell);
     requestAnimationFrame(()=>{

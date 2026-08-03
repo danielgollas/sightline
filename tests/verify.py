@@ -328,22 +328,19 @@ def main():
             c.tour = [];
             c.a = before.a; c.t = before.t;
             return {hiT, loT, panned, inRange, tourMoved,
-                    buttons: document.querySelectorAll('.handbtn').length};
+                    buttons: document.querySelectorAll('.zoombtn').length};
         }""")
-        check("hand tool clamps tilt to its limits",
+        check("dragging clamps tilt to its limits",
               hand["hiT"] == 20 and hand["loT"] == -10, json.dumps(hand))
         check("bounded pan snaps to the nearer limit",
               hand["panned"] in (0, 90) and abs(hand["inRange"] - 45) < 0.01, json.dumps(hand))
         check("the PT circuit travels with the head", hand["tourMoved"], json.dumps(hand))
-        check("every camera view has a hand button",
+        check("every camera view has a zoom toggle",
               hand["buttons"] >= 1, json.dumps(hand))
 
-        # and drag it for real through the DOM
+        # dragging is the default interaction - no arming step
         drag = page.evaluate("""() => {
             const cell = document.querySelector('.povcell');
-            const btn = cell.querySelector('.handbtn');
-            btn.click();                                  // arm the hand
-            const armed = cell.classList.contains('grab');
             const c = cams.find(x => x.id === cell.dataset.cam);
             const a0 = c.a, t0 = c.t;
             const r = cell.getBoundingClientRect();
@@ -352,12 +349,59 @@ def main():
             ev('pointerdown', r.x + r.width/2, r.y + r.height/2);
             ev('pointermove', r.x + r.width/2 - 80, r.y + r.height/2 + 30);
             ev('pointerup',   r.x + r.width/2 - 80, r.y + r.height/2 + 30);
-            return {armed, movedPan: Math.abs(c.a - a0) > 0.5, movedTilt: Math.abs(c.t - t0) > 0.5,
+            return {movedPan: Math.abs(c.a - a0) > 0.5, movedTilt: Math.abs(c.t - t0) > 0.5,
                     a0, a1: c.a, t0, t1: c.t};
         }""")
-        check("hand button arms the cell", drag["armed"], json.dumps(drag))
-        check("dragging the view pans and tilts the camera",
+        check("dragging the view pans and tilts, with no arming step",
               drag["movedPan"] and drag["movedTilt"], json.dumps(drag))
+
+        # the grabbed point must stay under the cursor: the frame is linear in
+        # bearing but TANGENT in elevation, and treating the vertical as linear
+        # is what made the first version of this feel wrong.
+        track = page.evaluate("""() => {
+            const cell = document.querySelector('.povcell');
+            const c = cams.find(x => x.id === cell.dataset.cam);
+            const S = specOf(c);
+            c.tiltMin = -60; c.tiltMax = 80;          // don't clamp mid-test
+            const r = cell.getBoundingClientRect();
+            const ev = (type, x, y) => cell.dispatchEvent(
+                new PointerEvent(type, {clientX:x, clientY:y, bubbles:true, pointerId:8}));
+            const worldOf = (fx, fy, a, t) => {
+              const A = frameAngles(c, fx, fy);
+              return {b: a + A.phi, e: -t + A.eps};    // absolute bearing / elevation
+            };
+            // grab well away from centre, where a linear approximation is worst
+            const fx0 = 0.22, fy0 = 0.24, fx1 = 0.62, fy1 = 0.71;
+            const a0 = c.a, t0 = c.t;
+            const grabbed = worldOf(fx0, fy0, a0, t0);
+            ev('pointerdown', r.x + r.width*fx0, r.y + r.height*fy0);
+            ev('pointermove', r.x + r.width*fx1, r.y + r.height*fy1);
+            ev('pointerup',   r.x + r.width*fx1, r.y + r.height*fy1);
+            const now = worldOf(fx1, fy1, c.a, c.t);
+            delete c.tiltMin; delete c.tiltMax;
+            return {dBearing: Math.abs(((now.b - grabbed.b + 540) % 360) - 180),
+                    dElev: Math.abs(now.e - grabbed.e)};
+        }""")
+        # Tilt is deliberately quantised to 0.1 degrees so saved projects stay
+        # tidy, so half a step is the tightest this can be. On a 41 degree
+        # frame that is about a third of a pixel.
+        check("the grabbed point stays under the cursor",
+              track["dBearing"] < 0.01 and track["dElev"] <= 0.05, json.dumps(track))
+
+        # the zoom toggle, not the cell, controls tile/fullscreen
+        zoom = page.evaluate("""() => {
+            const before = povMax;
+            document.querySelector('.povcell .zoombtn').click();
+            const maxed = povMax;
+            const cells = document.querySelectorAll('.povcell').length;
+            document.querySelector('.povcell .zoombtn').click();
+            return {before, maxed, cellsWhenMaxed: cells,
+                    restored: povMax, cellsAfter: document.querySelectorAll('.povcell').length};
+        }""")
+        check("zoom toggle fills the stage and restores",
+              zoom["before"] is None and zoom["maxed"] is not None
+              and zoom["cellsWhenMaxed"] == 1 and zoom["restored"] is None
+              and zoom["cellsAfter"] > 1, json.dumps(zoom))
 
         # ---- 14. PT limits come from the catalog ----
         pt = page.evaluate("""() => {
@@ -384,7 +428,7 @@ def main():
         check("E1 pan/tilt travel comes from the catalog",
               pt["specPan"] == 355 and pt["specTiltMin"] == 0 and pt["specTiltMax"] == 50,
               json.dumps(pt))
-        check("catalog tilt limits bound the hand tool",
+        check("catalog tilt limits bound the drag",
               pt["clampedUp"] == 0 and pt["clampedDown"] == 50, json.dumps(pt))
         check("a 355 degree head is treated as unrestricted",
               pt["freeWide"] is None, json.dumps(pt))
