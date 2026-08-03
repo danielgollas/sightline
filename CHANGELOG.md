@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.4.2
+
+### The 3D overlay did not line up with the 3D view
+Camera markers and box edit handles sat away from the geometry they belong to,
+by an amount that changed every time you orbited.
+
+Two projections have to agree in that view: WebGL draws the scene, and an SVG
+layer draws the handles on top - which is the whole reason the SVG layer
+survived the WebGL rewrite. They did not agree. GL rendered in **perspective**
+from `orbitEye()`; `proj()` projected **orthographically**. Two such
+projections can only coincide at a single point, and diverge further with
+orbit angle and with distance from the centre of the view.
+
+Measured before the fix, against the default house: 86-142 px of error at the
+default orbit, 129-195 px at another angle, and 97-220 px once panned. After:
+0.000 px at every angle tested.
+
+`proj()` now derives from the same matrices GL just drew with, so the two agree
+by construction rather than by coincidence. The orthographic path remains, and
+is still correct, for the case where WebGL is unavailable - there `proj()` *is*
+the renderer.
+
+### Panning did not move the 3D scene
+`orbitEye()` contained `panX*0`, so panning moved the SVG overlay and left the
+rendered scene where it was. Pan now slides eye and target together along the
+view's own axes, using a basis that matches `GL.M4.lookAtLH` exactly - taking
+the right vector from anywhere else makes panning drift diagonally.
+
+### Dragging a roof edge tracked the pointer at the wrong rate
+The same orthographic assumption: the pixels-to-feet factor was a fixed
+function of zoom and elevation, but under perspective it depends on how far the
+handle is from the eye. It is now measured from whichever projection is live,
+by probing it, so the GL and fallback paths stay honest without either knowing
+about the other.
+
 ## 0.4.1
 
 ### Pan and tilt travel in the catalog

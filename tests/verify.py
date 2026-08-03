@@ -391,6 +391,52 @@ def main():
         check("a narrow head gets real pan limits",
               pt["narrowMin"] == 30 and pt["narrowMax"] == 150, json.dumps(pt))
 
+        # ---- 15. the SVG overlay lands on the GL render ----
+        # The overlay draws the box edit handles and the camera markers. It used
+        # to project orthographically while GL rendered in perspective, so the
+        # handles sat up to 200 px off the geometry by an amount that changed
+        # with every orbit.
+        page.evaluate("() => { document.getElementById('m3d').click(); }")
+        page.wait_for_timeout(6000)
+        align = page.evaluate("""async () => {
+            function glScreen(p){
+              const cv=document.getElementById('gl3d');
+              const {eye,at}=orbitEye();
+              const P=GL.M4.perspective(38,cv.width/cv.height,0.5,600);
+              const V=GL.M4.lookAtLH(eye,at,[0,0,1]);
+              const M=GL.M4.mul(P,V);
+              const X=M[0]*p[0]+M[4]*p[1]+M[8]*p[2]+M[12];
+              const Y=M[1]*p[0]+M[5]*p[1]+M[9]*p[2]+M[13];
+              const Wc=M[3]*p[0]+M[7]*p[1]+M[11]*p[2]+M[15];
+              return {x:(X/Wc*0.5+0.5)*W, y:(1-(Y/Wc*0.5+0.5))*H};
+            }
+            const pts=[...cams.map(c=>[c.x,c.y,c.z]),[0,0,20],[25,25,0],[38,26,1.2]];
+            const views=[[-38,32,0,0],[20,45,0,0],[-120,20,0,0],[75,60,0,0],[-38,32,140,70]];
+            let worst=0;
+            const sA=az, sE=elv, sX=panX, sY=panY;
+            for(const [A,E,px,py] of views){
+              az=A; elv=E; panX=px; panY=py; render();
+              for(const p of pts){
+                const a=proj(p[0],p[1],p[2]), b=glScreen(p);
+                worst=Math.max(worst, Math.hypot(a.x-b.x,a.y-b.y));
+              }
+            }
+            az=sA; elv=sE; panX=sX; panY=sY; render();
+            return {worst};
+        }""")
+        check("SVG overlay matches the GL projection exactly",
+              align["worst"] < 0.01, f"worst {align['worst']:.4f} px")
+
+        # panning must move the rendered scene, not just the overlay
+        panned = page.evaluate("""() => {
+            panX=0; panY=0; const a=orbitEye().eye.slice();
+            panX=200; panY=0;  const b=orbitEye().eye.slice();
+            panX=0; panY=0; render();
+            return {moved: Math.hypot(b[0]-a[0],b[1]-a[1],b[2]-a[2])};
+        }""")
+        check("panning moves the GL camera", panned["moved"] > 1,
+              f"eye moved {panned['moved']:.2f} ft")
+
         check("no uncaught page errors", not errors, "; ".join(errors[:3]))
 
         browser.close()

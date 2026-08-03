@@ -1,7 +1,29 @@
 /* ---------------- 3D view ---------------- */
 const v3=$('view3d');
 let az=-38, elv=32, zoom=1, panX=0, panY=0;
+// World point to a position in the SVG overlay.
+//
+// When WebGL is drawing the scene this MUST use the same matrices GL used, or
+// the overlay only coincides with the render at one point and drifts away from
+// it as you orbit. It used to be an independent orthographic projection while
+// GL rendered in perspective, which put the camera markers and - worse - the
+// box edit handles up to 200 px from the geometry they belong to, by an amount
+// that changed with every rotation.
+//
+// The orthographic path below is still the real projection when WebGL is
+// unavailable, because then this function IS the renderer.
 function proj(x,y,z){
+  if(GLON&&glView3D){
+    const M=glView3D.mvp, V=glView3D.view;
+    const X=M[0]*x+M[4]*y+M[8]*z+M[12];
+    const Y=M[1]*x+M[5]*y+M[9]*z+M[13];
+    const Wc=M[3]*x+M[7]*y+M[11]*z+M[15];
+    // View-space depth, negated so larger still means nearer the viewer -
+    // the overlay's painter sort and the +50 handle bias both rely on that.
+    const vz=V[2]*x+V[6]*y+V[10]*z+V[14];
+    if(Wc<=1e-6)return {x:-1e5,y:-1e5,d:-1e9};      // behind the eye
+    return {x:(X/Wc*0.5+0.5)*W, y:(1-(Y/Wc*0.5+0.5))*H, d:-vz};
+  }
   const A=rad(az), E=rad(elv);
   const X=x*Math.cos(A)-y*Math.sin(A);
   const Y=x*Math.sin(A)+y*Math.cos(A);

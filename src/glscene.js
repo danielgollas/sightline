@@ -45,13 +45,36 @@ function sizeCanvas(cv){
   return [w,h];
 }
 // orbit parameters shared with the old SVG view
+const FOV3D=38;
 function orbitEye(){
   const A=rad(az), E=rad(elv);
   const dist=95/Math.max(zoom,0.2);
-  const cx=12.5+panX*0, cy=12.5+panY*0;
-  return {eye:[cx+dist*Math.cos(E)*Math.sin(A), cy+dist*Math.cos(E)*Math.cos(A), dist*Math.sin(E)],
-          at:[cx,cy,6]};
+  let eye=[12.5+dist*Math.cos(E)*Math.sin(A), 12.5+dist*Math.cos(E)*Math.cos(A), dist*Math.sin(E)];
+  let at=[12.5,12.5,6];
+  if(panX||panY){
+    // Pan slides the whole view sideways, so eye and target move together
+    // along the view's own right and up axes - shifting only the target would
+    // swing the camera instead of sliding it.
+    //
+    // The basis must match GL.M4.lookAtLH exactly (right = worldUp x forward)
+    // or panning drifts diagonally.
+    let f=[at[0]-eye[0],at[1]-eye[1],at[2]-eye[2]];
+    const fl=Math.hypot(...f)||1; f=f.map(v=>v/fl);
+    let r=[0*f[2]-1*f[1], 1*f[0]-0*f[2], 0*f[1]-0*f[0]];   // worldUp = (0,0,1)
+    const rl=Math.hypot(...r)||1; r=r.map(v=>v/rl);
+    const u=[f[1]*r[2]-f[2]*r[1], f[2]*r[0]-f[0]*r[2], f[0]*r[1]-f[1]*r[0]];
+    // pixels to world at the focus distance
+    const k=2*dist*Math.tan(rad(FOV3D)/2)/Math.max(H,1);
+    const dx=-panX*k, dy=panY*k;      // screen y runs down, view up runs up
+    const sh=[r[0]*dx+u[0]*dy, r[1]*dx+u[1]*dy, r[2]*dx+u[2]*dy];
+    eye=[eye[0]+sh[0],eye[1]+sh[1],eye[2]+sh[2]];
+    at =[at[0]+sh[0], at[1]+sh[1], at[2]+sh[2]];
+  }
+  return {eye,at};
 }
+// The matrices the 3D view was last drawn with. proj() reads these so the SVG
+// handle overlay lands exactly on the GL render instead of approximating it.
+let glView3D=null;
 let glFailed=false;
 function render3DGL(){
   if(glFailed||typeof GL==='undefined')return false;
@@ -67,9 +90,11 @@ function render3DGL_(){
   const m=ensureMesh();
   if(c.uploaded!==meshKey){GL.upload(c,m);c.uploaded=meshKey;}
   const {eye,at}=orbitEye();
-  const proj=GL.M4.perspective(38,w/h,0.5,600);
+  const projM=GL.M4.perspective(FOV3D,w/h,0.5,600);
   const view=GL.M4.lookAtLH(eye,at,[0,0,1]);
-  GL.drawScene(c,GL.M4.mul(proj,view),SUNV,SKYT,SKYB,[0,0,w,h]);
+  const mvp=GL.M4.mul(projM,view);
+  glView3D={mvp,view};
+  GL.drawScene(c,mvp,SUNV,SKYT,SKYB,[0,0,w,h]);
   return true;
 }
 function renderPOVGL(cam,cv){

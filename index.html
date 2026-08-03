@@ -2486,7 +2486,29 @@ function renderPOV(){
 /* ---------------- 3D view ---------------- */
 const v3=$('view3d');
 let az=-38, elv=32, zoom=1, panX=0, panY=0;
+// World point to a position in the SVG overlay.
+//
+// When WebGL is drawing the scene this MUST use the same matrices GL used, or
+// the overlay only coincides with the render at one point and drifts away from
+// it as you orbit. It used to be an independent orthographic projection while
+// GL rendered in perspective, which put the camera markers and - worse - the
+// box edit handles up to 200 px from the geometry they belong to, by an amount
+// that changed with every rotation.
+//
+// The orthographic path below is still the real projection when WebGL is
+// unavailable, because then this function IS the renderer.
 function proj(x,y,z){
+  if(GLON&&glView3D){
+    const M=glView3D.mvp, V=glView3D.view;
+    const X=M[0]*x+M[4]*y+M[8]*z+M[12];
+    const Y=M[1]*x+M[5]*y+M[9]*z+M[13];
+    const Wc=M[3]*x+M[7]*y+M[11]*z+M[15];
+    // View-space depth, negated so larger still means nearer the viewer -
+    // the overlay's painter sort and the +50 handle bias both rely on that.
+    const vz=V[2]*x+V[6]*y+V[10]*z+V[14];
+    if(Wc<=1e-6)return {x:-1e5,y:-1e5,d:-1e9};      // behind the eye
+    return {x:(X/Wc*0.5+0.5)*W, y:(1-(Y/Wc*0.5+0.5))*H, d:-vz};
+  }
   const A=rad(az), E=rad(elv);
   const X=x*Math.cos(A)-y*Math.sin(A);
   const Y=x*Math.sin(A)+y*Math.cos(A);
@@ -2678,13 +2700,36 @@ function sizeCanvas(cv){
   return [w,h];
 }
 // orbit parameters shared with the old SVG view
+const FOV3D=38;
 function orbitEye(){
   const A=rad(az), E=rad(elv);
   const dist=95/Math.max(zoom,0.2);
-  const cx=12.5+panX*0, cy=12.5+panY*0;
-  return {eye:[cx+dist*Math.cos(E)*Math.sin(A), cy+dist*Math.cos(E)*Math.cos(A), dist*Math.sin(E)],
-          at:[cx,cy,6]};
+  let eye=[12.5+dist*Math.cos(E)*Math.sin(A), 12.5+dist*Math.cos(E)*Math.cos(A), dist*Math.sin(E)];
+  let at=[12.5,12.5,6];
+  if(panX||panY){
+    // Pan slides the whole view sideways, so eye and target move together
+    // along the view's own right and up axes - shifting only the target would
+    // swing the camera instead of sliding it.
+    //
+    // The basis must match GL.M4.lookAtLH exactly (right = worldUp x forward)
+    // or panning drifts diagonally.
+    let f=[at[0]-eye[0],at[1]-eye[1],at[2]-eye[2]];
+    const fl=Math.hypot(...f)||1; f=f.map(v=>v/fl);
+    let r=[0*f[2]-1*f[1], 1*f[0]-0*f[2], 0*f[1]-0*f[0]];   // worldUp = (0,0,1)
+    const rl=Math.hypot(...r)||1; r=r.map(v=>v/rl);
+    const u=[f[1]*r[2]-f[2]*r[1], f[2]*r[0]-f[0]*r[2], f[0]*r[1]-f[1]*r[0]];
+    // pixels to world at the focus distance
+    const k=2*dist*Math.tan(rad(FOV3D)/2)/Math.max(H,1);
+    const dx=-panX*k, dy=panY*k;      // screen y runs down, view up runs up
+    const sh=[r[0]*dx+u[0]*dy, r[1]*dx+u[1]*dy, r[2]*dx+u[2]*dy];
+    eye=[eye[0]+sh[0],eye[1]+sh[1],eye[2]+sh[2]];
+    at =[at[0]+sh[0], at[1]+sh[1], at[2]+sh[2]];
+  }
+  return {eye,at};
 }
+// The matrices the 3D view was last drawn with. proj() reads these so the SVG
+// handle overlay lands exactly on the GL render instead of approximating it.
+let glView3D=null;
 let glFailed=false;
 function render3DGL(){
   if(glFailed||typeof GL==='undefined')return false;
@@ -2700,9 +2745,11 @@ function render3DGL_(){
   const m=ensureMesh();
   if(c.uploaded!==meshKey){GL.upload(c,m);c.uploaded=meshKey;}
   const {eye,at}=orbitEye();
-  const proj=GL.M4.perspective(38,w/h,0.5,600);
+  const projM=GL.M4.perspective(FOV3D,w/h,0.5,600);
   const view=GL.M4.lookAtLH(eye,at,[0,0,1]);
-  GL.drawScene(c,GL.M4.mul(proj,view),SUNV,SKYT,SKYB,[0,0,w,h]);
+  const mvp=GL.M4.mul(projM,view);
+  glView3D={mvp,view};
+  GL.drawScene(c,mvp,SUNV,SKYT,SKYB,[0,0,w,h]);
   return true;
 }
 function renderPOVGL(cam,cv){
@@ -3150,6 +3197,16 @@ svg.addEventListener('pointermove',e=>{
   if(drag){drag=null;coarse=false;render();list();}}));
 
 /* ---------------- interaction: 3D ---------------- */
+// Screen pixels per world foot of height, at this occluder's position, under
+// whichever projection is live. Probing the projection keeps the GL and SVG
+// fallback paths honest without either needing to know about the other.
+function pxPerFootAt(b){
+  const wm=worldM(b);
+  const c=TX.xformPt(wm,[(b.x0+b.x1)/2,(b.y0+b.y1)/2,(zmin(b)+zmax(b))/2]);
+  const a=proj(c[0],c[1],c[2]), z=proj(c[0],c[1],c[2]+1);
+  const px=Math.abs(z.y-a.y);
+  return px>0.05?px:1;             // degenerate head-on view: fall back to 1:1
+}
 let orbit=null, faceDrag=null;
 v3.addEventListener('pointerdown',e=>{
   const t=e.target.closest('[data-box]');
@@ -3175,8 +3232,11 @@ v3.addEventListener('pointerdown',e=>{
 v3.addEventListener('contextmenu',e=>e.preventDefault());
 v3.addEventListener('pointermove',e=>{
   if(faceDrag){
-    const s=Math.min(W/VIEW.w,H/VIEW.h)*zoom;
-    const d=-(e.clientY-faceDrag.y0)/(s*Math.cos(rad(elv)));
+    // Pixels to feet, measured from the projection actually in use rather than
+    // assumed. Under the perspective GL view the scale depends on how far the
+    // handle is from the eye, so a fixed orthographic factor made a roof edge
+    // track slower or faster than the pointer depending on the orbit.
+    const d=-(e.clientY-faceDrag.y0)/pxPerFootAt(faceDrag.b);
     const b=faceDrag.b, ax=faceDrag.axis;
     if(faceDrag.surf){
       const arr=faceDrag.v0.slice();

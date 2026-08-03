@@ -126,6 +126,19 @@ attributes, so dragging a roof edge is ordinary hit-testing. In pure WebGL each
 becomes a raycast against a mesh plus a synced HTML overlay. The handles are the
 reason the SVG layer survives.
 
+**Two projections, one source.** Because the overlay sits on top of the GL
+render, `proj()` MUST use the matrices GL just drew with - it reads `glView3D`,
+set by `render3DGL_()`. It did not always: it projected orthographically while
+GL rendered in perspective, which put handles up to 200 px from their geometry
+by an amount that changed with every orbit. Two projections of the same scene
+that are computed independently will disagree; the only fix is for one to be
+derived from the other. The orthographic branch is still live and still correct
+for `GLON === false`, where `proj()` is the renderer rather than an overlay.
+
+Anything converting pixels to world units in this view (the face-drag rate, for
+one) has the same obligation: probe the live projection rather than assume the
+orthographic scale.
+
 **Why painter's algorithm was abandoned.** Measured against ray-cast ground
 truth, the SVG renderer overdrew the house wall in one camera's view by six
 times — 40% of frame drawn against 7% actually visible. A polygon that wraps

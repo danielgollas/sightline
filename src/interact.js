@@ -74,6 +74,16 @@ svg.addEventListener('pointermove',e=>{
   if(drag){drag=null;coarse=false;render();list();}}));
 
 /* ---------------- interaction: 3D ---------------- */
+// Screen pixels per world foot of height, at this occluder's position, under
+// whichever projection is live. Probing the projection keeps the GL and SVG
+// fallback paths honest without either needing to know about the other.
+function pxPerFootAt(b){
+  const wm=worldM(b);
+  const c=TX.xformPt(wm,[(b.x0+b.x1)/2,(b.y0+b.y1)/2,(zmin(b)+zmax(b))/2]);
+  const a=proj(c[0],c[1],c[2]), z=proj(c[0],c[1],c[2]+1);
+  const px=Math.abs(z.y-a.y);
+  return px>0.05?px:1;             // degenerate head-on view: fall back to 1:1
+}
 let orbit=null, faceDrag=null;
 v3.addEventListener('pointerdown',e=>{
   const t=e.target.closest('[data-box]');
@@ -99,8 +109,11 @@ v3.addEventListener('pointerdown',e=>{
 v3.addEventListener('contextmenu',e=>e.preventDefault());
 v3.addEventListener('pointermove',e=>{
   if(faceDrag){
-    const s=Math.min(W/VIEW.w,H/VIEW.h)*zoom;
-    const d=-(e.clientY-faceDrag.y0)/(s*Math.cos(rad(elv)));
+    // Pixels to feet, measured from the projection actually in use rather than
+    // assumed. Under the perspective GL view the scale depends on how far the
+    // handle is from the eye, so a fixed orthographic factor made a roof edge
+    // track slower or faster than the pointer depending on the orbit.
+    const d=-(e.clientY-faceDrag.y0)/pxPerFootAt(faceDrag.b);
     const b=faceDrag.b, ax=faceDrag.axis;
     if(faceDrag.surf){
       const arr=faceDrag.v0.slice();
