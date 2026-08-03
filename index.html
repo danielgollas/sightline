@@ -947,6 +947,7 @@ const LEGACY_KEY={ptz:'reolink-e1-outdoor-se', duo:'reolink-duo-3v-poe'};
 const LEGACY_SPEC={
   'reolink-e1-outdoor-se':{id:'reolink-e1-outdoor-se',brand:'Reolink',model:'E1 Outdoor SE',
     resolution:{w:3840,h:2160},fovH:88,fovV:41.5,ptz:true,irFt:98,poe:false,wifi:true,
+    panRange:355,tiltMin:0,tiltMax:50,
     formats:['H.265','H.264'],compat:['reolink'],checked:'2026-08-02'},
   'reolink-duo-3v-poe':{id:'reolink-duo-3v-poe',brand:'Reolink',model:'Duo 3V PoE',
     resolution:{w:7680,h:2160},fovH:189,fovV:55,ptz:false,irFt:100,poe:true,wifi:false,
@@ -1372,9 +1373,13 @@ function specOf(c){
   const s = {resW,resH,fovH,fovV,
     irFt:src.irFt||0, floodlightFt:src.floodlightFt||0,
     maxRangeFt:src.maxRangeFt||0,
+    // Head travel. panRange is RELATIVE to the mount; tiltMin/tiltMax are
+    // absolute down-tilt, 0 = horizontal.
+    panRange:src.panRange??null, tiltMin:src.tiltMin??null, tiltMax:src.tiltMax??null,
     ptz:!!src.ptz, poe:!!src.poe, wifi:!!src.wifi,
     formats:src.formats||['H.265'],
     brand:src.brand||'', model:src.model||'custom',
+    tiltNote:src.tiltNote||'',
     fovVAssumed:!src.fovV};
   c._spec = s;
   return s;
@@ -2254,14 +2259,30 @@ const isWide=c=>specOf(c).fovH>=150;
    Per-camera overrides beat the catalog, which beats these defaults.
 */
 const TILT_MIN=-25, TILT_MAX=60;
+// A head that sweeps very nearly all the way round is not meaningfully
+// limited, and pretending otherwise would put an arbitrary seam somewhere in
+// the middle of a full circle.
+const PAN_FREE=350;
 function camLimits(c){
   const S=specOf(c);
   const pick=(a,b,d)=>a!==undefined&&a!==null?a:(b!==undefined&&b!==null?b:d);
+  let aMin=pick(c.panMin,null,null), aMax=pick(c.panMax,null,null);
+  if(aMin===null){
+    // Derive from the head's travel. panRange is relative to however the
+    // bracket was mounted, so it needs a reference bearing: panHome, recorded
+    // when the camera was placed. Without one the mount orientation is
+    // unknown and the only honest answer is unrestricted.
+    const range=pick(c.panRange,S.panRange,null);
+    if(range!==null && range<PAN_FREE && c.panHome!==undefined && c.panHome!==null){
+      aMin=norm(c.panHome-range/2);
+      aMax=norm(c.panHome+range/2);
+    }
+  }
   return {
     tMin:pick(c.tiltMin,S.tiltMin,TILT_MIN),
     tMax:pick(c.tiltMax,S.tiltMax,TILT_MAX),
-    aMin:pick(c.panMin,S.panMin,null),
-    aMax:pick(c.panMax,S.panMax,null)
+    aMin, aMax,
+    panRange:pick(c.panRange,S.panRange,null)
   };
 }
 // Signed offset from `from` to `to`, in -180..180.
@@ -3522,6 +3543,10 @@ function pickCamera(nvr){
       const c={id:'C'+n,name:`${e.model}`,catKey:e.key||e.id,
         spec:(({source,key,...r})=>r)(e),
         nvr:nvr?nvr.id:(nvrs[0]&&nvrs[0].id)||null,
+        // The bearing the bracket faces. A head's pan travel is measured from
+        // here, so it has to be recorded at placement rather than inferred
+        // later from wherever the camera happens to be aimed.
+        panHome:0,
         x:-14,y:16,z:10.5,a:0,t:15,note:'',on:true};
       cams.push(c);
       select('cam',c.id);
@@ -3723,23 +3748,30 @@ function propsCam(p,c){
   p.append(num('x',c.x,v=>c.x=v));
   p.append(num('y',c.y,v=>c.y=v));
   p.append(num('price',c.price||0,v=>c.price=v,10));
-  p.append(head('Pan / tilt limits'));
+  p.append(head('Head travel'));
   const lim=camLimits(c);
+  const sp=mk('div','spec');
+  sp.innerHTML = S.ptz
+    ? `pan <b>${lim.panRange!==null?lim.panRange+'°':'not specified'}</b> · `+
+      `tilt <b>${lim.tMin}° to ${lim.tMax}°</b><br>`+
+      (lim.aMin!==null
+        ? `limited to bearings <b>${Math.round(lim.aMin)}°–${Math.round(lim.aMax)}°</b>`
+        : (lim.panRange!==null && lim.panRange>=350
+            ? 'pans effectively all the way round'
+            : 'pan unrestricted — set a mount bearing to limit it'))
+    : 'Fixed camera. The hand tool re-aims the bracket rather than a motor.';
+  p.append(sp);
   p.append(num('tilt min°',lim.tMin,v=>c.tiltMin=v,1));
   p.append(num('tilt max°',lim.tMax,v=>c.tiltMax=v,1));
-  const panRow=mk('div','row');
-  panRow.append(btn(lim.aMin===null?'Limit pan…':'Free pan',()=>{
-    if(lim.aMin===null){ c.panMin=norm(c.a-45); c.panMax=norm(c.a+45); }
-    else { c.panMin=null; c.panMax=null; }
-    render(); list();
-  }));
-  p.append(panRow);
-  if(lim.aMin!==null){
-    p.append(num('pan from°',lim.aMin,v=>c.panMin=norm(v),1));
-    p.append(num('pan to°',lim.aMax,v=>c.panMax=norm(v),1));
+  if(S.ptz && lim.panRange!==null && lim.panRange<350){
+    // Pan travel is measured from wherever the bracket faces, so the limit is
+    // only meaningful once that bearing is known.
+    p.append(num('mount bearing°',c.panHome!==undefined&&c.panHome!==null?c.panHome:Math.round(c.a),
+      v=>c.panHome=norm(v),1));
   }
   const hn=mk('p','note');
-  hn.innerHTML='The ✋ tool on a camera view drags to pan and tilt within these limits.';
+  hn.innerHTML='The ✋ tool on a camera view drags to pan and tilt within these limits.'+
+    (S.tiltNote?`<br>${S.tiltNote}`:'');
   p.append(hn);
 
   p.append(head('Recording'));

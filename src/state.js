@@ -190,6 +190,7 @@ const LEGACY_KEY={ptz:'reolink-e1-outdoor-se', duo:'reolink-duo-3v-poe'};
 const LEGACY_SPEC={
   'reolink-e1-outdoor-se':{id:'reolink-e1-outdoor-se',brand:'Reolink',model:'E1 Outdoor SE',
     resolution:{w:3840,h:2160},fovH:88,fovV:41.5,ptz:true,irFt:98,poe:false,wifi:true,
+    panRange:355,tiltMin:0,tiltMax:50,
     formats:['H.265','H.264'],compat:['reolink'],checked:'2026-08-02'},
   'reolink-duo-3v-poe':{id:'reolink-duo-3v-poe',brand:'Reolink',model:'Duo 3V PoE',
     resolution:{w:7680,h:2160},fovH:189,fovV:55,ptz:false,irFt:100,poe:true,wifi:false,

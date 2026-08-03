@@ -136,6 +136,10 @@ function pickCamera(nvr){
       const c={id:'C'+n,name:`${e.model}`,catKey:e.key||e.id,
         spec:(({source,key,...r})=>r)(e),
         nvr:nvr?nvr.id:(nvrs[0]&&nvrs[0].id)||null,
+        // The bearing the bracket faces. A head's pan travel is measured from
+        // here, so it has to be recorded at placement rather than inferred
+        // later from wherever the camera happens to be aimed.
+        panHome:0,
         x:-14,y:16,z:10.5,a:0,t:15,note:'',on:true};
       cams.push(c);
       select('cam',c.id);

@@ -157,9 +157,13 @@ function specOf(c){
   const s = {resW,resH,fovH,fovV,
     irFt:src.irFt||0, floodlightFt:src.floodlightFt||0,
     maxRangeFt:src.maxRangeFt||0,
+    // Head travel. panRange is RELATIVE to the mount; tiltMin/tiltMax are
+    // absolute down-tilt, 0 = horizontal.
+    panRange:src.panRange??null, tiltMin:src.tiltMin??null, tiltMax:src.tiltMax??null,
     ptz:!!src.ptz, poe:!!src.poe, wifi:!!src.wifi,
     formats:src.formats||['H.265'],
     brand:src.brand||'', model:src.model||'custom',
+    tiltNote:src.tiltNote||'',
     fovVAssumed:!src.fovV};
   c._spec = s;
   return s;

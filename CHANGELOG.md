@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.1
+
+### Pan and tilt travel in the catalog
+The hand tool clamped tilt to a generic -25..60, which was a placeholder. PT
+cameras now carry their real head travel, transcribed from the manufacturers:
+
+| camera | pan | tilt |
+|---|---|---|
+| Reolink RLC-823A | 360° | 0–90° |
+| Reolink TrackMix PoE | 355° | 0–90° |
+| Reolink E1 Outdoor SE | 355° | 0–50° |
+
+`tiltMin`/`tiltMax` are absolute in this app's convention - down-tilt degrees,
+0 horizontal, 90 straight down - so they drop straight into the model. An E1
+can no longer be tilted above horizontal by the hand tool, because the hardware
+cannot do it.
+
+`panRange` is different: it is total travel measured from however the bracket
+was mounted, not an absolute bearing. It therefore needs a reference, recorded
+as `panHome` when a camera is placed, and a head with no recorded mount bearing
+stays unrestricted rather than being given an invented limit. Anything sweeping
+350° or more is treated as free - all three of these do - so pan limits only
+bite on a genuinely restricted head.
+
+Reolink publish the E1's tilt as "50°" without saying where it starts. The
+0–50 mapping is an assumption and says so, in the catalog and in the property
+editor.
+
 ## 0.4.0
 
 ### Drag to pan and tilt

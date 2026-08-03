@@ -219,14 +219,30 @@ const isWide=c=>specOf(c).fovH>=150;
    Per-camera overrides beat the catalog, which beats these defaults.
 */
 const TILT_MIN=-25, TILT_MAX=60;
+// A head that sweeps very nearly all the way round is not meaningfully
+// limited, and pretending otherwise would put an arbitrary seam somewhere in
+// the middle of a full circle.
+const PAN_FREE=350;
 function camLimits(c){
   const S=specOf(c);
   const pick=(a,b,d)=>a!==undefined&&a!==null?a:(b!==undefined&&b!==null?b:d);
+  let aMin=pick(c.panMin,null,null), aMax=pick(c.panMax,null,null);
+  if(aMin===null){
+    // Derive from the head's travel. panRange is relative to however the
+    // bracket was mounted, so it needs a reference bearing: panHome, recorded
+    // when the camera was placed. Without one the mount orientation is
+    // unknown and the only honest answer is unrestricted.
+    const range=pick(c.panRange,S.panRange,null);
+    if(range!==null && range<PAN_FREE && c.panHome!==undefined && c.panHome!==null){
+      aMin=norm(c.panHome-range/2);
+      aMax=norm(c.panHome+range/2);
+    }
+  }
   return {
     tMin:pick(c.tiltMin,S.tiltMin,TILT_MIN),
     tMax:pick(c.tiltMax,S.tiltMax,TILT_MAX),
-    aMin:pick(c.panMin,S.panMin,null),
-    aMax:pick(c.panMax,S.panMax,null)
+    aMin, aMax,
+    panRange:pick(c.panRange,S.panRange,null)
   };
 }
 // Signed offset from `from` to `to`, in -180..180.

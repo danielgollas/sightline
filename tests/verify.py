@@ -359,6 +359,38 @@ def main():
         check("dragging the view pans and tilts the camera",
               drag["movedPan"] and drag["movedTilt"], json.dumps(drag))
 
+        # ---- 14. PT limits come from the catalog ----
+        pt = page.evaluate("""() => {
+            const e1 = cams.find(c => c.catKey === 'reolink-e1-outdoor-se');
+            const S = specOf(e1);
+            delete e1.tiltMin; delete e1.tiltMax; delete e1.panMin; delete e1.panMax;
+            const L = camLimits(e1);
+            // the head cannot look above horizontal
+            const t0 = e1.t;
+            aimTo(e1, e1.a, -30); const clampedUp = e1.t;
+            aimTo(e1, e1.a, 80);  const clampedDown = e1.t;
+            e1.t = t0;
+            // a 355 degree head is treated as free even with a mount bearing
+            e1.panHome = 90;
+            const freeWide = camLimits(e1).aMin;
+            // a narrow head is not
+            e1.panRange = 120;
+            const narrow = camLimits(e1);
+            delete e1.panRange; delete e1.panHome;
+            return {specPan:S.panRange, specTiltMin:S.tiltMin, specTiltMax:S.tiltMax,
+                    limMin:L.tMin, limMax:L.tMax, clampedUp, clampedDown,
+                    freeWide, narrowMin:narrow.aMin, narrowMax:narrow.aMax};
+        }""")
+        check("E1 pan/tilt travel comes from the catalog",
+              pt["specPan"] == 355 and pt["specTiltMin"] == 0 and pt["specTiltMax"] == 50,
+              json.dumps(pt))
+        check("catalog tilt limits bound the hand tool",
+              pt["clampedUp"] == 0 and pt["clampedDown"] == 50, json.dumps(pt))
+        check("a 355 degree head is treated as unrestricted",
+              pt["freeWide"] is None, json.dumps(pt))
+        check("a narrow head gets real pan limits",
+              pt["narrowMin"] == 30 and pt["narrowMax"] == 150, json.dumps(pt))
+
         check("no uncaught page errors", not errors, "; ".join(errors[:3]))
 
         browser.close()
