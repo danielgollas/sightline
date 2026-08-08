@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.5.0
+
+### Splatter was painted over the render, not into it
+Coverage splatter was drawn as SVG polygons on top of the WebGL scene. SVG has
+no depth buffer, so a patch of ground behind the house was painted straight
+over the house. The 3D view filled with colour that appeared to float in front
+of the geometry blocking it - which is exactly the class of failure the move
+to WebGL was meant to end, reappearing in the overlay.
+
+Splatter is now scene geometry: two triangles per quad, uploaded to the GPU and
+drawn against the same depth buffer as everything else. Patches behind a
+building are hidden by that building. They test depth without writing it, so
+overlapping patches blend rather than one arbitrarily winning, and a polygon
+offset keeps them off the surface they lie on.
+
+The shader carries this in a `uSplat` path with per-vertex alpha smuggled
+through the `aAO` attribute, which flat shading does not use. With `uSplat` 0
+every existing path computes exactly what it did before.
+
+### The plan view is an orthographic render of the same scene
+The plan was a separate flat drawing. It is now the same scene through an
+orthographic camera looking straight down, which means it shows the same
+materials, the same ambient occlusion and the same splatter - the reason for
+the change.
+
+The projection is built to match `wx()`/`wy()` rather than approximate them:
+the world point under the centre of the screen is the eye, and the half-extents
+are the visible world half-width and half-height. Measured 0.000 px of
+disagreement between the render and the diagram at three zoom levels, and 20 ft
+of height shifts a point 0.000 px sideways, which is what makes it a plan
+rather than a very high perspective.
+
+The SVG layer keeps everything the render cannot do: grid, boundary, labels,
+coverage cones, camera markers and every edit handle. What it no longer draws
+is the flat grass, the projected sun shadows and the opaque building fills -
+those would hide the render underneath. Buildings keep a thin outline.
+
+Two atmosphere settings had to go for the plan: fog falls off with distance and
+the ortho eye sits 400 ft up, which pinned it at maximum and washed the whole
+view out; and a sky seen from above reads worse than the app's own background
+for "outside the property".
+
+### Fixed
+- Dragging a camera with splatter on would have rebuilt a ~100 ms ray-cast on
+  every pointer-move, because camera poses are part of the overlay cache key.
+  The overlays now hold still during a drag and rebuild on release, the same
+  way the coverage figures do.
+
 ## 0.4.3
 
 ### Dragging a camera view is now the default, and tracks properly

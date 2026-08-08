@@ -121,6 +121,19 @@ that the bilinear warped-top code assumes z-up and would need revisiting.
 The 3D and camera views are WebGL with a real depth buffer. The plan view and
 the 3D editing handles are SVG, overlaid.
 
+**The plan view is a render too.** Since 0.5.0 the plan is the same scene under
+an orthographic camera looking straight down (`renderPlanGL`), with the SVG
+layer reduced to the diagram: grid, boundary, cones, labels, handles. Its
+projection is built to match `wx()`/`wy()` exactly, and `planRendered()` gates
+the flat fills that would otherwise hide the render.
+
+**Splatter is geometry, not an overlay.** It goes through `GL.drawSplat`
+against the real depth buffer. Drawn as SVG it was painted over the render and
+patches behind a building showed through them. If you are tempted to add
+another overlay that represents something *in* the scene, that is the lesson:
+an overlay cannot be occluded by the scene. Frustum solids are still SVG, and
+still have this limitation.
+
 **Why the split.** Editing handles are `<polygon>` elements with `data-box`
 attributes, so dragging a roof edge is ordinary hit-testing. In pure WebGL each
 becomes a raycast against a mesh plus a synced HTML overlay. The handles are the

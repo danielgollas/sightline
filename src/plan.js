@@ -51,6 +51,11 @@ function drawPlan(){
 }
 
 /* ---------- static: ground, boundary ---------- */
+// True when WebGL is drawing the plan. Then the ground, the buildings and the
+// splatter come from the render, and this layer contributes only the diagram:
+// grid, boundary, labels, handles, cones, cameras.
+const planRendered=()=>GLON&&glViewPlan;
+
 function buildBase(g){
   if(gridOn()){
     const a=Math.floor(sx(0)/5)*5,bb=Math.ceil(sx(W)/5)*5;
@@ -58,18 +63,21 @@ function buildBase(g){
     for(let v=a;v<=bb;v+=5)g.append(el('line',{class:'gridline',x1:wx(v),y1:0,x2:wx(v),y2:H}));
     for(let v=c0;v<=d0;v+=5)g.append(el('line',{class:'gridline',x1:0,y1:wy(v),x2:W,y2:wy(v)}));
   }
-  const dfs=el('defs');
-  const gp=el('pattern',{id:'grass2d',width:10,height:10,patternUnits:'userSpaceOnUse'});
-  gp.append(el('rect',{width:10,height:10,fill:'#22301F'}));
-  gp.append(el('path',{d:'M2 8 l1.5 -4 M6 9 l1 -4',stroke:'#2E4429','stroke-width':.9,
-    'stroke-linecap':'round'}));
-  dfs.append(gp); g.append(dfs);
-  g.append(el('polygon',{points:prop.map(([x,y])=>`${wx(x)},${wy(y)}`).join(' '),
-    fill:'url(#grass2d)',stroke:'none'}));
-  [...boxes.filter(b=>b.on).map(shadowOf),...fenceShadows()].forEach(poly=>{
-    g.append(el('polygon',{points:poly.map(([x,y])=>`${wx(x)},${wy(y)}`).join(' '),
-      fill:'#12200F','fill-opacity':.5,stroke:'none'}));
-  });
+  if(!planRendered()){
+    // Flat fills only when there is no render underneath to show the ground.
+    const dfs=el('defs');
+    const gp=el('pattern',{id:'grass2d',width:10,height:10,patternUnits:'userSpaceOnUse'});
+    gp.append(el('rect',{width:10,height:10,fill:'#22301F'}));
+    gp.append(el('path',{d:'M2 8 l1.5 -4 M6 9 l1 -4',stroke:'#2E4429','stroke-width':.9,
+      'stroke-linecap':'round'}));
+    dfs.append(gp); g.append(dfs);
+    g.append(el('polygon',{points:prop.map(([x,y])=>`${wx(x)},${wy(y)}`).join(' '),
+      fill:'url(#grass2d)',stroke:'none'}));
+    [...boxes.filter(b=>b.on).map(shadowOf),...fenceShadows()].forEach(poly=>{
+      g.append(el('polygon',{points:poly.map(([x,y])=>`${wx(x)},${wy(y)}`).join(' '),
+        fill:'#12200F','fill-opacity':.5,stroke:'none'}));
+    });
+  }
   const pts=prop.map(([x,y])=>`${wx(x)},${wy(y)}`).join(' ');
   g.append(el('polygon',{points:pts,fill:'none',
     stroke:selProp?'#E9E5DB':(fence.on?MAT.wood:'#4A5462'),
@@ -136,10 +144,14 @@ function buildOver(g){
     // the plan, so draw its four transformed corners as a polygon.
     const corners=[[b.x0,b.y0],[b.x1,b.y0],[b.x1,b.y1],[b.x0,b.y1]]
       .map(([x,y])=>TX.xformPt(wm,[x,y,0]));
+    // With a render underneath, an opaque fill would hide the building and the
+    // splatter on its roof; the outline is what the diagram still needs.
+    const solid=!planRendered();
     const fill=b.on?(tall>6?MAT.wall:(/deck/i.test(b.name)?MAT.deck:MAT.wood)):'transparent';
     g.append(el('polygon',{points:corners.map(p=>`${wx(p[0])},${wy(p[1])}`).join(' '),
-      fill,'fill-opacity':b.on?(tall>6?1:.85):.2,
-      stroke:isSel?'#E9E5DB':'#4A5462','stroke-width':isSel?1.6:.9,
+      fill:solid?fill:'none','fill-opacity':solid?(b.on?(tall>6?1:.85):.2):0,
+      stroke:isSel?'#E9E5DB':(solid?'#4A5462':'rgba(233,229,219,.35)'),
+      'stroke-width':isSel?1.6:.9,
       'stroke-dasharray':b.on?'':'4 3'}));
     const mid=TX.xformPt(wm,[(b.x0+b.x1)/2,(b.y0+b.y1)/2,0]);
     const cxm=wx(mid[0]), cym=wy(mid[1]);

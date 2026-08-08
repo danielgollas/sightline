@@ -98,14 +98,10 @@ function draw3d(){
           fill:f.col,'fill-opacity':f.a,stroke:f.col,'stroke-opacity':f.a*0.5,'stroke-width':.4})});
     });
   }
-  if(splatOn()&&splat&&!orbit){
-    splat.forEach(sp=>{
-      const P=sp.p.map(([x,y,z])=>proj(x,y,z));
-      items.push({d:P.reduce((s,q)=>s+q.d,0)/4+0.35,
-        e:el('polygon',{points:P.map(q=>`${q.x.toFixed(1)},${q.y.toFixed(1)}`).join(' '),
-          fill:sp.col,'fill-opacity':sp.a,stroke:'none'})});
-    });
-  }
+  // Splatter is drawn by the GL pass now (GL.drawSplat), against the real
+  // depth buffer. As SVG it was painted over the render and patches behind a
+  // building showed straight through it.
+
   boxes.forEach(b=>{
     if(!b.on)return;
     const isSel=selBox===b.id;

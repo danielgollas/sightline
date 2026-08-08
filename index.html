@@ -35,7 +35,10 @@ body{background:var(--ink);color:var(--bone);font-family:var(--sans);-webkit-fon
 .stage.split #cov,.stage.split #plan,.stage.split #view3d{width:50%}
 .stage.split #povgrid{left:50%;width:50%;padding:52px 10px 10px;border-left:1px solid var(--line)}
 #cov,#plan,#view3d,#gl3d{position:absolute;inset:0;width:100%;height:100%}
-#gl3d{z-index:3}
+/* One z-order for every mode: the GL render underneath, then the coverage
+   raster, then the plan diagram, then the 3D handle overlay. The plan view is
+   a render now, so gl3d has to sit below the diagram rather than above it. */
+#gl3d{z-index:1}
 .stage.split #gl3d{width:50%}
 #povgrid{position:absolute;inset:0;z-index:4;display:none;grid-template-columns:1fr 1fr;
   gap:8px;padding:52px 12px 12px;overflow-y:auto;align-content:start;grid-auto-rows:min-content}
@@ -88,7 +91,7 @@ body{background:var(--ink);color:var(--bone);font-family:var(--sans);-webkit-fon
    and must be transparent or it paints over the whole render. The gradient is
    the pre-WebGL sky, kept only as a fallback and defeated by the !important
    above it - do not "tidy" that away without checking 3D still draws. */
-#cov{z-index:1}#plan{z-index:2}#view3d{z-index:4;background:none !important;background:linear-gradient(#3F70A4 0%,#7FAAD2 45%,#0F1319 46%,#0F1319 100%)}
+#cov{z-index:2}#plan{z-index:3}#view3d{z-index:4;background:none !important;background:linear-gradient(#3F70A4 0%,#7FAAD2 45%,#0F1319 46%,#0F1319 100%)}
 svg{display:block;touch-action:none}
 
 .modes{position:absolute;top:14px;right:16px;z-index:6;display:flex;gap:4px}
@@ -268,6 +271,12 @@ const M4 = {
     }
     return o;
   },
+  // Straight orthographic box. The plan view uses this: no perspective divide,
+  // so a roof projects onto its own footprint and the view stays a plan.
+  ortho(l,r,b,t,n,f){
+    return [2/(r-l),0,0,0, 0,2/(t-b),0,0, 0,0,-2/(f-n),0,
+            -(r+l)/(r-l), -(t+b)/(t-b), -(f+n)/(f-n), 1];
+  },
   perspective(fovyDeg,aspect,near,far){
     const f=1/Math.tan(fovyDeg*Math.PI/360), nf=1/(near-far);
     return [f/aspect,0,0,0, 0,f,0,0, 0,0,(far+near)*nf,-1, 0,0,2*far*near*nf,0];
@@ -310,8 +319,16 @@ uniform float uCyl;
 uniform float uHalfH;   // radians
 uniform float uHalfV;   // radians
 uniform float uFar;
+// uSplat > 0 draws the coverage splatter: flat per-quad colour, per-vertex
+// alpha smuggled in through aAO (which flat shading does not use), no fog.
+uniform float uSplat;
+// Fog falls off with distance from the eye. The plan camera sits hundreds of
+// feet up looking down, which pins that term at maximum and washes the whole
+// view out, so the plan passes 0 here.
+uniform float uFogK;
 varying vec3 vCol;
 varying float vFog;
+varying float vA;
 varying vec4 vClip;
 void main(){
   vec4 clip;
@@ -344,18 +361,21 @@ void main(){
   float up = aNormal.z * 0.5 + 0.5;
   vec3 ambient = mix(vec3(0.30,0.29,0.27), vec3(0.44,0.50,0.60), up);
   vec3 lit = aColor * (ambient + vec3(0.95,0.92,0.84) * lam * 0.85);
-  vCol = mix(lit * aAO, aColor, uFlat);
+  float flat_ = max(uFlat, uSplat);
+  vCol = mix(lit * aAO, aColor, flat_);
+  vA = mix(1.0, aAO, uSplat);
   float dist = (uCyl > 0.5) ? length((uView * vec4(aPos,1.0)).xyz) : clip.w;
-  vFog = mix(clamp(dist / 260.0, 0.0, 0.55), 0.0, uFlat);
+  vFog = mix(clamp(dist * uFogK, 0.0, 0.55), 0.0, flat_);
 }`;
 
 const FS = `
 precision mediump float;
 varying vec3 vCol;
 varying float vFog;
+varying float vA;
 void main(){
   vec3 haze = vec3(0.61,0.77,0.89);
-  gl_FragColor = vec4(mix(vCol, haze, vFog), 1.0);
+  gl_FragColor = vec4(mix(vCol, haze, vFog), vA);
 }`;
 
 const SKY_VS = `
@@ -408,12 +428,15 @@ function makeCtx(canvas){
     uHalfH:gl.getUniformLocation(ctx.prog,'uHalfH'),
     uHalfV:gl.getUniformLocation(ctx.prog,'uHalfV'),
     uFar:gl.getUniformLocation(ctx.prog,'uFar'),
+    uSplat:gl.getUniformLocation(ctx.prog,'uSplat'),
+    uFogK:gl.getUniformLocation(ctx.prog,'uFogK'),
     skyXY:gl.getAttribLocation(ctx.sky,'aXY'),
     skyTop:gl.getUniformLocation(ctx.sky,'uTop'),
     skyBot:gl.getUniformLocation(ctx.sky,'uBot')
   };
   ctx.buf={pos:gl.createBuffer(),nrm:gl.createBuffer(),col:gl.createBuffer(),
-           ao:gl.createBuffer(),skyQuad:gl.createBuffer()};
+           ao:gl.createBuffer(),skyQuad:gl.createBuffer(),
+           spos:gl.createBuffer(),scol:gl.createBuffer(),salpha:gl.createBuffer()};
   gl.bindBuffer(gl.ARRAY_BUFFER,ctx.buf.skyQuad);
   gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]),gl.STATIC_DRAW);
   gl.enable(gl.DEPTH_TEST);
@@ -421,6 +444,7 @@ function makeCtx(canvas){
   gl.cullFace(gl.BACK);
   gl.frontFace(gl.CW);
   ctx.count=0;
+  ctx.scount=0;
   return ctx;
 }
 
@@ -433,7 +457,56 @@ function upload(ctx,mesh){
   ctx.count=mesh.pos.length/3;
 }
 
-function drawScene(ctx,mvp,sun,skyTop,skyBot,vp,cyl){
+// Coverage splatter as triangles in the scene, not polygons over it.
+function uploadSplat(ctx,sp){
+  const {gl,buf}=ctx;
+  const put=(b,arr)=>{gl.bindBuffer(gl.ARRAY_BUFFER,b);
+    gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(arr),gl.STATIC_DRAW);};
+  put(buf.spos,sp.pos); put(buf.scol,sp.col); put(buf.salpha,sp.alpha);
+  ctx.scount=sp.pos.length/3;
+}
+// Drawn after the scene, against the same depth buffer, so a patch behind a
+// building is hidden by that building. As an SVG overlay it could only ever be
+// painted on top - which is the whole reason the renderer stopped being SVG.
+function drawSplat(ctx,mvp,vp,cyl){
+  const {gl,loc,buf}=ctx;
+  if(!ctx.scount)return;
+  gl.viewport(vp[0],vp[1],vp[2],vp[3]);
+  gl.enable(gl.SCISSOR_TEST);
+  gl.scissor(vp[0],vp[1],vp[2],vp[3]);
+  gl.useProgram(ctx.prog);
+  const bind=(b,l,n)=>{gl.bindBuffer(gl.ARRAY_BUFFER,b);
+    gl.enableVertexAttribArray(l); gl.vertexAttribPointer(l,n,gl.FLOAT,false,0,0);};
+  bind(buf.spos,loc.aPos,3); bind(buf.scol,loc.aColor,3);
+  bind(buf.salpha,loc.aAO,1); bind(buf.spos,loc.aNormal,3);   // normal unused when flat
+  gl.uniformMatrix4fv(loc.uMVP,false,new Float32Array(mvp));
+  gl.uniformMatrix4fv(loc.uView,false,new Float32Array(cyl?cyl.view:mvp));
+  gl.uniform1f(loc.uCyl,cyl?1:0);
+  gl.uniform1f(loc.uHalfH,cyl?cyl.halfH:1);
+  gl.uniform1f(loc.uHalfV,cyl?cyl.halfV:1);
+  gl.uniform1f(loc.uFar,cyl?cyl.far:600);
+  gl.uniform1f(loc.uFlat,0);
+  gl.uniform1f(loc.uSplat,1);
+  gl.uniform1f(loc.uFogK,0);
+  // Test depth but do not write it, so overlapping patches blend instead of
+  // one arbitrarily winning. Offset toward the eye or the patch z-fights with
+  // the surface it is lying on.
+  gl.depthMask(false);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+  gl.disable(gl.CULL_FACE);
+  gl.enable(gl.POLYGON_OFFSET_FILL);
+  gl.polygonOffset(-1,-2);
+  gl.drawArrays(gl.TRIANGLES,0,ctx.scount);
+  gl.disable(gl.POLYGON_OFFSET_FILL);
+  gl.enable(gl.CULL_FACE);
+  gl.disable(gl.BLEND);
+  gl.depthMask(true);
+  gl.uniform1f(loc.uSplat,0);
+  gl.disable(gl.SCISSOR_TEST);
+}
+
+function drawScene(ctx,mvp,sun,skyTop,skyBot,vp,cyl,fogK){
   const {gl,loc,buf}=ctx;
   gl.viewport(vp[0],vp[1],vp[2],vp[3]);
   gl.enable(gl.SCISSOR_TEST);
@@ -472,11 +545,13 @@ function drawScene(ctx,mvp,sun,skyTop,skyBot,vp,cyl){
   gl.uniform1f(loc.uFar,cyl?cyl.far:600);
   gl.uniform3fv(loc.uSun,sun);
   gl.uniform1f(loc.uFlat,ctx.flat?1:0);
+  gl.uniform1f(loc.uSplat,0);
+  gl.uniform1f(loc.uFogK,fogK===undefined?1/260:fogK);
   gl.drawArrays(gl.TRIANGLES,0,ctx.count);
   gl.disable(gl.SCISSOR_TEST);
 }
 
-return {M4,makeCtx,upload,drawScene};
+return {M4,makeCtx,upload,drawScene,uploadSplat,drawSplat};
 })();
 
 
@@ -1696,6 +1771,11 @@ function drawPlan(){
 }
 
 /* ---------- static: ground, boundary ---------- */
+// True when WebGL is drawing the plan. Then the ground, the buildings and the
+// splatter come from the render, and this layer contributes only the diagram:
+// grid, boundary, labels, handles, cones, cameras.
+const planRendered=()=>GLON&&glViewPlan;
+
 function buildBase(g){
   if(gridOn()){
     const a=Math.floor(sx(0)/5)*5,bb=Math.ceil(sx(W)/5)*5;
@@ -1703,18 +1783,21 @@ function buildBase(g){
     for(let v=a;v<=bb;v+=5)g.append(el('line',{class:'gridline',x1:wx(v),y1:0,x2:wx(v),y2:H}));
     for(let v=c0;v<=d0;v+=5)g.append(el('line',{class:'gridline',x1:0,y1:wy(v),x2:W,y2:wy(v)}));
   }
-  const dfs=el('defs');
-  const gp=el('pattern',{id:'grass2d',width:10,height:10,patternUnits:'userSpaceOnUse'});
-  gp.append(el('rect',{width:10,height:10,fill:'#22301F'}));
-  gp.append(el('path',{d:'M2 8 l1.5 -4 M6 9 l1 -4',stroke:'#2E4429','stroke-width':.9,
-    'stroke-linecap':'round'}));
-  dfs.append(gp); g.append(dfs);
-  g.append(el('polygon',{points:prop.map(([x,y])=>`${wx(x)},${wy(y)}`).join(' '),
-    fill:'url(#grass2d)',stroke:'none'}));
-  [...boxes.filter(b=>b.on).map(shadowOf),...fenceShadows()].forEach(poly=>{
-    g.append(el('polygon',{points:poly.map(([x,y])=>`${wx(x)},${wy(y)}`).join(' '),
-      fill:'#12200F','fill-opacity':.5,stroke:'none'}));
-  });
+  if(!planRendered()){
+    // Flat fills only when there is no render underneath to show the ground.
+    const dfs=el('defs');
+    const gp=el('pattern',{id:'grass2d',width:10,height:10,patternUnits:'userSpaceOnUse'});
+    gp.append(el('rect',{width:10,height:10,fill:'#22301F'}));
+    gp.append(el('path',{d:'M2 8 l1.5 -4 M6 9 l1 -4',stroke:'#2E4429','stroke-width':.9,
+      'stroke-linecap':'round'}));
+    dfs.append(gp); g.append(dfs);
+    g.append(el('polygon',{points:prop.map(([x,y])=>`${wx(x)},${wy(y)}`).join(' '),
+      fill:'url(#grass2d)',stroke:'none'}));
+    [...boxes.filter(b=>b.on).map(shadowOf),...fenceShadows()].forEach(poly=>{
+      g.append(el('polygon',{points:poly.map(([x,y])=>`${wx(x)},${wy(y)}`).join(' '),
+        fill:'#12200F','fill-opacity':.5,stroke:'none'}));
+    });
+  }
   const pts=prop.map(([x,y])=>`${wx(x)},${wy(y)}`).join(' ');
   g.append(el('polygon',{points:pts,fill:'none',
     stroke:selProp?'#E9E5DB':(fence.on?MAT.wood:'#4A5462'),
@@ -1781,10 +1864,14 @@ function buildOver(g){
     // the plan, so draw its four transformed corners as a polygon.
     const corners=[[b.x0,b.y0],[b.x1,b.y0],[b.x1,b.y1],[b.x0,b.y1]]
       .map(([x,y])=>TX.xformPt(wm,[x,y,0]));
+    // With a render underneath, an opaque fill would hide the building and the
+    // splatter on its roof; the outline is what the diagram still needs.
+    const solid=!planRendered();
     const fill=b.on?(tall>6?MAT.wall:(/deck/i.test(b.name)?MAT.deck:MAT.wood)):'transparent';
     g.append(el('polygon',{points:corners.map(p=>`${wx(p[0])},${wy(p[1])}`).join(' '),
-      fill,'fill-opacity':b.on?(tall>6?1:.85):.2,
-      stroke:isSel?'#E9E5DB':'#4A5462','stroke-width':isSel?1.6:.9,
+      fill:solid?fill:'none','fill-opacity':solid?(b.on?(tall>6?1:.85):.2):0,
+      stroke:isSel?'#E9E5DB':(solid?'#4A5462':'rgba(233,229,219,.35)'),
+      'stroke-width':isSel?1.6:.9,
       'stroke-dasharray':b.on?'':'4 3'}));
     const mid=TX.xformPt(wm,[(b.x0+b.x1)/2,(b.y0+b.y1)/2,0]);
     const cxm=wx(mid[0]), cym=wy(mid[1]);
@@ -2630,14 +2717,10 @@ function draw3d(){
           fill:f.col,'fill-opacity':f.a,stroke:f.col,'stroke-opacity':f.a*0.5,'stroke-width':.4})});
     });
   }
-  if(splatOn()&&splat&&!orbit){
-    splat.forEach(sp=>{
-      const P=sp.p.map(([x,y,z])=>proj(x,y,z));
-      items.push({d:P.reduce((s,q)=>s+q.d,0)/4+0.35,
-        e:el('polygon',{points:P.map(q=>`${q.x.toFixed(1)},${q.y.toFixed(1)}`).join(' '),
-          fill:sp.col,'fill-opacity':sp.a,stroke:'none'})});
-    });
-  }
+  // Splatter is drawn by the GL pass now (GL.drawSplat), against the real
+  // depth buffer. As SVG it was painted over the render and patches behind a
+  // building showed straight through it.
+
   boxes.forEach(b=>{
     if(!b.on)return;
     const isSel=selBox===b.id;
@@ -2727,6 +2810,7 @@ function ensureMesh(){
 }
 const SUNV=new Float32Array(SUN);
 const SKYT=[0.29,0.49,0.71], SKYB=[0.61,0.77,0.89];
+const PLANBG=[0.059,0.075,0.098];        // --ink, the app background
 
 // A WebGL context is bound to one canvas element for life, and browsers cap
 // how many can exist at once. Caching by camera id while rebuilding the
@@ -2777,6 +2861,35 @@ function orbitEye(){
 // The matrices the 3D view was last drawn with. proj() reads these so the SVG
 // handle overlay lands exactly on the GL render instead of approximating it.
 let glView3D=null;
+// Same idea for the plan view, which is now an orthographic render of the same
+// scene rather than a separate flat drawing.
+let glViewPlan=null;
+
+/* ---------- splatter as scene geometry ---------- */
+const hexRGB=h=>[parseInt(h.slice(1,3),16)/255,
+                 parseInt(h.slice(3,5),16)/255,
+                 parseInt(h.slice(5,7),16)/255];
+let splatGL=null, splatGLKey='';
+// Two triangles per quad, colour per vertex, alpha per vertex. buildSplat
+// already produced the quads; this only reshapes them for the GPU.
+function splatMesh(){
+  const key=_overlayKey+'|'+(splat?splat.length:0);
+  if(splatGL&&splatGLKey===key)return splatGL;
+  const pos=[],col=[],alpha=[];
+  (splat||[]).forEach(s=>{
+    const c=hexRGB(s.col), a=s.a;
+    const [A,B,C,D]=s.p;
+    [A,B,C, A,C,D].forEach(p=>{ pos.push(p[0],p[1],p[2]); col.push(c[0],c[1],c[2]); alpha.push(a); });
+  });
+  splatGL={pos,col,alpha};
+  splatGLKey=key;
+  return splatGL;
+}
+function pushSplat(c){
+  const sp=splat?splatMesh():{pos:[],col:[],alpha:[]};
+  const k=splat?splatGLKey:'none';
+  if(c.splatKey!==k){ GL.uploadSplat(c,sp); c.splatKey=k; }
+}
 let glFailed=false;
 function render3DGL(){
   if(glFailed||typeof GL==='undefined')return false;
@@ -2797,6 +2910,47 @@ function render3DGL_(){
   const mvp=GL.M4.mul(projM,view);
   glView3D={mvp,view};
   GL.drawScene(c,mvp,SUNV,SKYT,SKYB,[0,0,w,h]);
+  pushSplat(c);
+  if(splat)GL.drawSplat(c,mvp,[0,0,w,h]);
+  return true;
+}
+/* ---------------- plan view, orthographic ---------------- */
+// The plan is the same scene through an orthographic camera looking straight
+// down, so it shows the same materials, the same ambient occlusion and - the
+// reason this exists - the same coverage splatter, correctly occluded.
+//
+// The projection is built to match wx()/wy() exactly: the world point at the
+// centre of the screen is the eye, and the half-extents are the visible world
+// half-width and half-height. The SVG diagram on top therefore lands on the
+// render without any fudging.
+function renderPlanGL(){
+  if(glFailed||typeof GL==='undefined')return false;
+  try{ return renderPlanGL_();}catch(err){
+    glFailed=true; console.warn('WebGL unavailable, falling back to SVG:',err.message);
+    $('gl3d').style.display='none'; return false;
+  }
+}
+function renderPlanGL_(){
+  const cv=$('gl3d');
+  const [w,h]=sizeCanvas(cv);
+  const c=glReady(cv); if(!c)return false;
+  const m=ensureMesh();
+  if(c.uploaded!==meshKey){GL.upload(c,m);c.uploaded=meshKey;}
+  const cx=sx(W/2), cy=sy(H/2);            // world point under the screen centre
+  const hw=(W/2)/T.s, hh=(H/2)/T.s;        // visible world half-extents
+  const EYE=400;
+  // worldUp cannot be the view direction, and (0,-1,0) is what puts north up
+  // and east right under GL.M4.lookAtLH's right = worldUp x forward.
+  const view=GL.M4.lookAtLH([cx,cy,EYE],[cx,cy,0],[0,-1,0]);
+  const projM=GL.M4.ortho(-hw,hw,-hh,hh,1,EYE+200);
+  const mvp=GL.M4.mul(projM,view);
+  glViewPlan={mvp,view};
+  // No sky and no fog in a plan: outside the property there is no ground, and
+  // the app's own background reads as "no data" far better than a blue sky
+  // seen from above would.
+  GL.drawScene(c,mvp,SUNV,PLANBG,PLANBG,[0,0,w,h],null,0);
+  pushSplat(c);
+  if(splat)GL.drawSplat(c,mvp,[0,0,w,h]);
   return true;
 }
 function renderPOVGL(cam,cv){
@@ -3120,7 +3274,7 @@ let coarse=false;
 // the selected camera.
 let _overlayKey='';
 function overlayKey(){
-  return [sceneKey(),
+  return [mode, sceneKey(),
           cams.map(c=>`${c.on?1:0}${c.x},${c.y},${c.z},${c.a},${c.t}`).join(';'),
           opts.occ?1:0, opts.night?1:0, opts.tour?1:0,
           splatOn()?1:0, frusOn()?1:0, sel||'', playing?1:0, targetZ()].join('|');
@@ -3130,36 +3284,42 @@ function render(){
   // frame and never need invalidating by hand on an edit.
   sceneGen++;
   T=fit();
-  if(mode!=='3d')$('gl3d').style.display='none';
+  if(mode==='pov')$('gl3d').style.display='none';
+
+  // Frustum solids and splatter are ray-cast, not drawn: measured at ~30 ms
+  // and ~100 ms respectively, which every property edit was paying. They
+  // depend only on the geometry, the camera poses and the coverage options,
+  // so cache them on exactly that. Splatter is needed by the plan view as
+  // well now that the plan is a render of the same scene.
+  // Not while the pointer is down. Camera poses are part of the key, so
+  // dragging a camera with splatter on would rebuild a ~100 ms ray-cast on
+  // every pointer-move. The stale overlay rides along with the drag and is
+  // rebuilt on release, which is what the coverage figures do too.
+  if(mode!=='pov'&&!coarse){
+    const k3=overlayKey();
+    if(k3!==_overlayKey){
+      splat=(!playing&&splatOn())?buildSplat():null;
+      frusta=(!playing&&mode==='3d'&&frusOn())?buildFrusta():null;
+      _overlayKey=k3;
+    }
+  }
+
   if(mode==='pov'){
     cov.style.display='none'; svg.style.display='none'; v3.style.display='none';
     renderPOV();
   }
-  else if(mode==='split'){
+  else if(mode==='split'||mode==='2d'){
     const heat=drawMode()==='heat';
     cov.style.display=heat?'':'none'; svg.style.display=''; v3.style.display='none';
+    $('gl3d').style.display='';
+    GLON=renderPlanGL();
     if(heat)paintCoverage(coarse);
     drawPlan();
-    renderPOV();
+    if(mode==='split')renderPOV();
   }
-  else if(mode==='2d'){
-    const heat=drawMode()==='heat';
-    cov.style.display=heat?'':'none'; svg.style.display=''; v3.style.display='none';
-    if(heat)paintCoverage(coarse);
-    drawPlan(); }
   else if(mode==='3d'){ cov.style.display='none'; svg.style.display='none';
     $('gl3d').style.display=''; v3.style.display='';
     GLON=render3DGL();
-    // Frustum solids and splatter are ray-cast, not drawn: measured at ~30 ms
-    // and ~100 ms respectively, which every property edit was paying. They
-    // depend only on the geometry, the camera poses and the coverage options,
-    // so cache them on exactly that.
-    const k3=overlayKey();
-    if(k3!==_overlayKey){
-      splat=(!playing&&splatOn())?buildSplat():null;
-      frusta=(!playing&&frusOn())?buildFrusta():null;
-      _overlayKey=k3;
-    }
     draw3d(); }
   if(!playing){
     const code=$('code');            // only present when Project is selected

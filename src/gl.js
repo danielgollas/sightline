@@ -31,6 +31,12 @@ const M4 = {
     }
     return o;
   },
+  // Straight orthographic box. The plan view uses this: no perspective divide,
+  // so a roof projects onto its own footprint and the view stays a plan.
+  ortho(l,r,b,t,n,f){
+    return [2/(r-l),0,0,0, 0,2/(t-b),0,0, 0,0,-2/(f-n),0,
+            -(r+l)/(r-l), -(t+b)/(t-b), -(f+n)/(f-n), 1];
+  },
   perspective(fovyDeg,aspect,near,far){
     const f=1/Math.tan(fovyDeg*Math.PI/360), nf=1/(near-far);
     return [f/aspect,0,0,0, 0,f,0,0, 0,0,(far+near)*nf,-1, 0,0,2*far*near*nf,0];
@@ -73,8 +79,16 @@ uniform float uCyl;
 uniform float uHalfH;   // radians
 uniform float uHalfV;   // radians
 uniform float uFar;
+// uSplat > 0 draws the coverage splatter: flat per-quad colour, per-vertex
+// alpha smuggled in through aAO (which flat shading does not use), no fog.
+uniform float uSplat;
+// Fog falls off with distance from the eye. The plan camera sits hundreds of
+// feet up looking down, which pins that term at maximum and washes the whole
+// view out, so the plan passes 0 here.
+uniform float uFogK;
 varying vec3 vCol;
 varying float vFog;
+varying float vA;
 varying vec4 vClip;
 void main(){
   vec4 clip;
@@ -107,18 +121,21 @@ void main(){
   float up = aNormal.z * 0.5 + 0.5;
   vec3 ambient = mix(vec3(0.30,0.29,0.27), vec3(0.44,0.50,0.60), up);
   vec3 lit = aColor * (ambient + vec3(0.95,0.92,0.84) * lam * 0.85);
-  vCol = mix(lit * aAO, aColor, uFlat);
+  float flat_ = max(uFlat, uSplat);
+  vCol = mix(lit * aAO, aColor, flat_);
+  vA = mix(1.0, aAO, uSplat);
   float dist = (uCyl > 0.5) ? length((uView * vec4(aPos,1.0)).xyz) : clip.w;
-  vFog = mix(clamp(dist / 260.0, 0.0, 0.55), 0.0, uFlat);
+  vFog = mix(clamp(dist * uFogK, 0.0, 0.55), 0.0, flat_);
 }`;
 
 const FS = `
 precision mediump float;
 varying vec3 vCol;
 varying float vFog;
+varying float vA;
 void main(){
   vec3 haze = vec3(0.61,0.77,0.89);
-  gl_FragColor = vec4(mix(vCol, haze, vFog), 1.0);
+  gl_FragColor = vec4(mix(vCol, haze, vFog), vA);
 }`;
 
 const SKY_VS = `
@@ -171,12 +188,15 @@ function makeCtx(canvas){
     uHalfH:gl.getUniformLocation(ctx.prog,'uHalfH'),
     uHalfV:gl.getUniformLocation(ctx.prog,'uHalfV'),
     uFar:gl.getUniformLocation(ctx.prog,'uFar'),
+    uSplat:gl.getUniformLocation(ctx.prog,'uSplat'),
+    uFogK:gl.getUniformLocation(ctx.prog,'uFogK'),
     skyXY:gl.getAttribLocation(ctx.sky,'aXY'),
     skyTop:gl.getUniformLocation(ctx.sky,'uTop'),
     skyBot:gl.getUniformLocation(ctx.sky,'uBot')
   };
   ctx.buf={pos:gl.createBuffer(),nrm:gl.createBuffer(),col:gl.createBuffer(),
-           ao:gl.createBuffer(),skyQuad:gl.createBuffer()};
+           ao:gl.createBuffer(),skyQuad:gl.createBuffer(),
+           spos:gl.createBuffer(),scol:gl.createBuffer(),salpha:gl.createBuffer()};
   gl.bindBuffer(gl.ARRAY_BUFFER,ctx.buf.skyQuad);
   gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]),gl.STATIC_DRAW);
   gl.enable(gl.DEPTH_TEST);
@@ -184,6 +204,7 @@ function makeCtx(canvas){
   gl.cullFace(gl.BACK);
   gl.frontFace(gl.CW);
   ctx.count=0;
+  ctx.scount=0;
   return ctx;
 }
 
@@ -196,7 +217,56 @@ function upload(ctx,mesh){
   ctx.count=mesh.pos.length/3;
 }
 
-function drawScene(ctx,mvp,sun,skyTop,skyBot,vp,cyl){
+// Coverage splatter as triangles in the scene, not polygons over it.
+function uploadSplat(ctx,sp){
+  const {gl,buf}=ctx;
+  const put=(b,arr)=>{gl.bindBuffer(gl.ARRAY_BUFFER,b);
+    gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(arr),gl.STATIC_DRAW);};
+  put(buf.spos,sp.pos); put(buf.scol,sp.col); put(buf.salpha,sp.alpha);
+  ctx.scount=sp.pos.length/3;
+}
+// Drawn after the scene, against the same depth buffer, so a patch behind a
+// building is hidden by that building. As an SVG overlay it could only ever be
+// painted on top - which is the whole reason the renderer stopped being SVG.
+function drawSplat(ctx,mvp,vp,cyl){
+  const {gl,loc,buf}=ctx;
+  if(!ctx.scount)return;
+  gl.viewport(vp[0],vp[1],vp[2],vp[3]);
+  gl.enable(gl.SCISSOR_TEST);
+  gl.scissor(vp[0],vp[1],vp[2],vp[3]);
+  gl.useProgram(ctx.prog);
+  const bind=(b,l,n)=>{gl.bindBuffer(gl.ARRAY_BUFFER,b);
+    gl.enableVertexAttribArray(l); gl.vertexAttribPointer(l,n,gl.FLOAT,false,0,0);};
+  bind(buf.spos,loc.aPos,3); bind(buf.scol,loc.aColor,3);
+  bind(buf.salpha,loc.aAO,1); bind(buf.spos,loc.aNormal,3);   // normal unused when flat
+  gl.uniformMatrix4fv(loc.uMVP,false,new Float32Array(mvp));
+  gl.uniformMatrix4fv(loc.uView,false,new Float32Array(cyl?cyl.view:mvp));
+  gl.uniform1f(loc.uCyl,cyl?1:0);
+  gl.uniform1f(loc.uHalfH,cyl?cyl.halfH:1);
+  gl.uniform1f(loc.uHalfV,cyl?cyl.halfV:1);
+  gl.uniform1f(loc.uFar,cyl?cyl.far:600);
+  gl.uniform1f(loc.uFlat,0);
+  gl.uniform1f(loc.uSplat,1);
+  gl.uniform1f(loc.uFogK,0);
+  // Test depth but do not write it, so overlapping patches blend instead of
+  // one arbitrarily winning. Offset toward the eye or the patch z-fights with
+  // the surface it is lying on.
+  gl.depthMask(false);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+  gl.disable(gl.CULL_FACE);
+  gl.enable(gl.POLYGON_OFFSET_FILL);
+  gl.polygonOffset(-1,-2);
+  gl.drawArrays(gl.TRIANGLES,0,ctx.scount);
+  gl.disable(gl.POLYGON_OFFSET_FILL);
+  gl.enable(gl.CULL_FACE);
+  gl.disable(gl.BLEND);
+  gl.depthMask(true);
+  gl.uniform1f(loc.uSplat,0);
+  gl.disable(gl.SCISSOR_TEST);
+}
+
+function drawScene(ctx,mvp,sun,skyTop,skyBot,vp,cyl,fogK){
   const {gl,loc,buf}=ctx;
   gl.viewport(vp[0],vp[1],vp[2],vp[3]);
   gl.enable(gl.SCISSOR_TEST);
@@ -235,10 +305,12 @@ function drawScene(ctx,mvp,sun,skyTop,skyBot,vp,cyl){
   gl.uniform1f(loc.uFar,cyl?cyl.far:600);
   gl.uniform3fv(loc.uSun,sun);
   gl.uniform1f(loc.uFlat,ctx.flat?1:0);
+  gl.uniform1f(loc.uSplat,0);
+  gl.uniform1f(loc.uFogK,fogK===undefined?1/260:fogK);
   gl.drawArrays(gl.TRIANGLES,0,ctx.count);
   gl.disable(gl.SCISSOR_TEST);
 }
 
-return {M4,makeCtx,upload,drawScene};
+return {M4,makeCtx,upload,drawScene,uploadSplat,drawSplat};
 })();
 

@@ -25,6 +25,7 @@ function ensureMesh(){
 }
 const SUNV=new Float32Array(SUN);
 const SKYT=[0.29,0.49,0.71], SKYB=[0.61,0.77,0.89];
+const PLANBG=[0.059,0.075,0.098];        // --ink, the app background
 
 // A WebGL context is bound to one canvas element for life, and browsers cap
 // how many can exist at once. Caching by camera id while rebuilding the
@@ -75,6 +76,35 @@ function orbitEye(){
 // The matrices the 3D view was last drawn with. proj() reads these so the SVG
 // handle overlay lands exactly on the GL render instead of approximating it.
 let glView3D=null;
+// Same idea for the plan view, which is now an orthographic render of the same
+// scene rather than a separate flat drawing.
+let glViewPlan=null;
+
+/* ---------- splatter as scene geometry ---------- */
+const hexRGB=h=>[parseInt(h.slice(1,3),16)/255,
+                 parseInt(h.slice(3,5),16)/255,
+                 parseInt(h.slice(5,7),16)/255];
+let splatGL=null, splatGLKey='';
+// Two triangles per quad, colour per vertex, alpha per vertex. buildSplat
+// already produced the quads; this only reshapes them for the GPU.
+function splatMesh(){
+  const key=_overlayKey+'|'+(splat?splat.length:0);
+  if(splatGL&&splatGLKey===key)return splatGL;
+  const pos=[],col=[],alpha=[];
+  (splat||[]).forEach(s=>{
+    const c=hexRGB(s.col), a=s.a;
+    const [A,B,C,D]=s.p;
+    [A,B,C, A,C,D].forEach(p=>{ pos.push(p[0],p[1],p[2]); col.push(c[0],c[1],c[2]); alpha.push(a); });
+  });
+  splatGL={pos,col,alpha};
+  splatGLKey=key;
+  return splatGL;
+}
+function pushSplat(c){
+  const sp=splat?splatMesh():{pos:[],col:[],alpha:[]};
+  const k=splat?splatGLKey:'none';
+  if(c.splatKey!==k){ GL.uploadSplat(c,sp); c.splatKey=k; }
+}
 let glFailed=false;
 function render3DGL(){
   if(glFailed||typeof GL==='undefined')return false;
@@ -95,6 +125,47 @@ function render3DGL_(){
   const mvp=GL.M4.mul(projM,view);
   glView3D={mvp,view};
   GL.drawScene(c,mvp,SUNV,SKYT,SKYB,[0,0,w,h]);
+  pushSplat(c);
+  if(splat)GL.drawSplat(c,mvp,[0,0,w,h]);
+  return true;
+}
+/* ---------------- plan view, orthographic ---------------- */
+// The plan is the same scene through an orthographic camera looking straight
+// down, so it shows the same materials, the same ambient occlusion and - the
+// reason this exists - the same coverage splatter, correctly occluded.
+//
+// The projection is built to match wx()/wy() exactly: the world point at the
+// centre of the screen is the eye, and the half-extents are the visible world
+// half-width and half-height. The SVG diagram on top therefore lands on the
+// render without any fudging.
+function renderPlanGL(){
+  if(glFailed||typeof GL==='undefined')return false;
+  try{ return renderPlanGL_();}catch(err){
+    glFailed=true; console.warn('WebGL unavailable, falling back to SVG:',err.message);
+    $('gl3d').style.display='none'; return false;
+  }
+}
+function renderPlanGL_(){
+  const cv=$('gl3d');
+  const [w,h]=sizeCanvas(cv);
+  const c=glReady(cv); if(!c)return false;
+  const m=ensureMesh();
+  if(c.uploaded!==meshKey){GL.upload(c,m);c.uploaded=meshKey;}
+  const cx=sx(W/2), cy=sy(H/2);            // world point under the screen centre
+  const hw=(W/2)/T.s, hh=(H/2)/T.s;        // visible world half-extents
+  const EYE=400;
+  // worldUp cannot be the view direction, and (0,-1,0) is what puts north up
+  // and east right under GL.M4.lookAtLH's right = worldUp x forward.
+  const view=GL.M4.lookAtLH([cx,cy,EYE],[cx,cy,0],[0,-1,0]);
+  const projM=GL.M4.ortho(-hw,hw,-hh,hh,1,EYE+200);
+  const mvp=GL.M4.mul(projM,view);
+  glViewPlan={mvp,view};
+  // No sky and no fog in a plan: outside the property there is no ground, and
+  // the app's own background reads as "no data" far better than a blue sky
+  // seen from above would.
+  GL.drawScene(c,mvp,SUNV,PLANBG,PLANBG,[0,0,w,h],null,0);
+  pushSplat(c);
+  if(splat)GL.drawSplat(c,mvp,[0,0,w,h]);
   return true;
 }
 function renderPOVGL(cam,cv){

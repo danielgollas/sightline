@@ -481,6 +481,66 @@ def main():
         check("panning moves the GL camera", panned["moved"] > 1,
               f"eye moved {panned['moved']:.2f} ft")
 
+        # ---- 16. the plan view is an orthographic render of the same scene ----
+        page.evaluate("() => { document.getElementById('m2d').click(); }")
+        page.wait_for_timeout(3000)
+        planv = page.evaluate("""() => {
+            function glScreen(p){
+              const M=glViewPlan.mvp;
+              const X=M[0]*p[0]+M[4]*p[1]+M[8]*p[2]+M[12];
+              const Y=M[1]*p[0]+M[5]*p[1]+M[9]*p[2]+M[13];
+              const Wc=M[3]*p[0]+M[7]*p[1]+M[11]*p[2]+M[15];
+              return {x:(X/Wc*0.5+0.5)*W, y:(1-(Y/Wc*0.5+0.5))*H};
+            }
+            const pts=[[0,0,0],[25,25,0],[12.5,12.5,20],[-18,-19,0],[46,51,3]];
+            const sZ=zoom2, sX=ctrX, sY=ctrY;
+            let worst=0, height=0;
+            for(const [z,cx,cy] of [[1,ctrX,ctrY],[2.4,8,14],[0.5,30,-5]]){
+              zoom2=z; ctrX=cx; ctrY=cy; render();
+              for(const p of pts){
+                const g=glScreen(p);
+                worst=Math.max(worst, Math.hypot(g.x-wx(p[0]), g.y-wy(p[1])));
+              }
+              // a plan must be orthographic: height must not shift a point sideways
+              const a=glScreen([10,10,0]), b=glScreen([10,10,20]);
+              height=Math.max(height, Math.hypot(a.x-b.x, a.y-b.y));
+            }
+            zoom2=sZ; ctrX=sX; ctrY=sY; render();
+            return {worst, height, hasMatrix: !!glViewPlan};
+        }""")
+        check("plan render aligns with the diagram exactly",
+              planv["hasMatrix"] and planv["worst"] < 0.01, f"worst {planv['worst']:.4f} px")
+        check("the plan projection is orthographic",
+              planv["height"] < 0.01, f"20 ft of height shifts a point {planv['height']:.4f} px")
+
+        # ---- 17. splatter is scene geometry, not an overlay ----
+        splat_gl = page.evaluate("""() => {
+            opts.splat = true; render();
+            const cv = document.getElementById('gl3d');
+            const inPlan = cv.__ctx ? cv.__ctx.scount : 0;
+            document.getElementById('m3d').click();
+            // Frustum solids are still SVG overlays, so isolate splatter by
+            // turning them off: any polygons left would be splatter painted
+            // over the render, which is the bug this replaced.
+            opts.frus = false; render();
+            const in3d = cv.__ctx ? cv.__ctx.scount : 0;
+            const withSplat = document.querySelectorAll('#view3d polygon').length;
+            opts.splat = false; render();
+            const withoutSplat = document.querySelectorAll('#view3d polygon').length;
+            const afterOff = cv.__ctx ? cv.__ctx.scount : 0;
+            opts.frus = true;
+            document.getElementById('m2d').click();
+            return {inPlan, in3d, withSplat, withoutSplat, afterOff};
+        }""")
+        check("splatter is uploaded as GL geometry in the plan view",
+              splat_gl["inPlan"] > 100, json.dumps(splat_gl))
+        check("splatter is GL geometry in the 3D view too",
+              splat_gl["in3d"] > 100, json.dumps(splat_gl))
+        check("splatter adds no SVG polygons over the render",
+              splat_gl["withSplat"] == splat_gl["withoutSplat"], json.dumps(splat_gl))
+        check("turning splatter off clears the GL geometry",
+              splat_gl["afterOff"] == 0, json.dumps(splat_gl))
+
         check("no uncaught page errors", not errors, "; ".join(errors[:3]))
 
         browser.close()
