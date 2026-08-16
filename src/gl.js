@@ -82,6 +82,14 @@ uniform float uFar;
 // uSplat > 0 draws the coverage splatter: flat per-quad colour, per-vertex
 // alpha smuggled in through aAO (which flat shading does not use), no fog.
 uniform float uSplat;
+// uFrus > 0 draws the frustum solids. Same flat-colour path as the splatter,
+// but the alpha is modulated by a Fresnel term so the volume reads as a volume:
+// a surface seen edge-on covers more of the solid along the line of sight than
+// one seen face-on, so brightening at grazing angles is what a real
+// participating medium does. Drawn additively, which makes the result
+// independent of the order the triangles arrive in - and they cannot be sorted,
+// because they interpenetrate.
+uniform float uFrus;
 // Fog falls off with distance from the eye. The plan camera sits hundreds of
 // feet up looking down, which pins that term at maximum and washes the whole
 // view out, so the plan passes 0 here.
@@ -121,9 +129,32 @@ void main(){
   float up = aNormal.z * 0.5 + 0.5;
   vec3 ambient = mix(vec3(0.30,0.29,0.27), vec3(0.44,0.50,0.60), up);
   vec3 lit = aColor * (ambient + vec3(0.95,0.92,0.84) * lam * 0.85);
-  float flat_ = max(uFlat, uSplat);
+  float flat_ = max(uFlat, max(uSplat, uFrus));
   vCol = mix(lit * aAO, aColor, flat_);
-  vA = mix(1.0, aAO, uSplat);
+  vA = mix(1.0, aAO, max(uSplat, uFrus));
+  if(uFrus > 0.5){
+    // Fresnel in view space. uView is the real view matrix on this path.
+    mat3 nv = mat3(uView[0].xyz, uView[1].xyz, uView[2].xyz);
+    vec3 n = normalize(nv * aNormal);
+    vec3 v = normalize(-(uView * vec4(aPos,1.0)).xyz);
+    float f = 1.0 - abs(dot(n, v));
+    // aAO carries the per-quad alpha buildFrusta() chose, which was tuned for
+    // an SVG painter stacking a dozen polygons on top of each other. Here the
+    // depth buffer means you see about two layers, so the same numbers came out
+    // nearly invisible; the gain restores the weight.
+    //
+    // The Fresnel lift is deliberately gentle. A frustum's walls are big flat
+    // sheets, so at almost any orbit angle one of them is edge-on, and a strong
+    // grazing term turned the volume into a fan of blazing blades. Depth is
+    // carried instead by how many layers a ray crosses - which is what depth
+    // actually is - with this only softening the silhouette.
+    vA = clamp(aAO * 3.0 * (0.82 + 0.45 * f * f), 0.0, 0.62);
+    // Push toward the pure hue. Which camera a volume belongs to is the whole
+    // point of colouring it, and a thin translucent layer of a muted colour
+    // reads as grey long before it reads as orange.
+    float lum = dot(aColor, vec3(0.30,0.59,0.11));
+    vCol = clamp(mix(vec3(lum), aColor, 1.45), 0.0, 1.0);
+  }
   float dist = (uCyl > 0.5) ? length((uView * vec4(aPos,1.0)).xyz) : clip.w;
   vFog = mix(clamp(dist * uFogK, 0.0, 0.55), 0.0, flat_);
 }`;
@@ -135,7 +166,11 @@ varying float vFog;
 varying float vA;
 void main(){
   vec3 haze = vec3(0.61,0.77,0.89);
-  gl_FragColor = vec4(mix(vCol, haze, vFog), vA);
+  // Premultiplied. The translucent passes blend with ONE, ONE_MINUS_SRC_ALPHA,
+  // which keeps a layer's own hue instead of adding light to the destination -
+  // additive over a daylit scene has no headroom left and every colour drifts
+  // to white. On the opaque pass vA is 1, so this is the colour unchanged.
+  gl_FragColor = vec4(mix(vCol, haze, vFog) * vA, vA);
 }`;
 
 const SKY_VS = `
@@ -189,6 +224,7 @@ function makeCtx(canvas){
     uHalfV:gl.getUniformLocation(ctx.prog,'uHalfV'),
     uFar:gl.getUniformLocation(ctx.prog,'uFar'),
     uSplat:gl.getUniformLocation(ctx.prog,'uSplat'),
+    uFrus:gl.getUniformLocation(ctx.prog,'uFrus'),
     uFogK:gl.getUniformLocation(ctx.prog,'uFogK'),
     skyXY:gl.getAttribLocation(ctx.sky,'aXY'),
     skyTop:gl.getUniformLocation(ctx.sky,'uTop'),
@@ -196,7 +232,9 @@ function makeCtx(canvas){
   };
   ctx.buf={pos:gl.createBuffer(),nrm:gl.createBuffer(),col:gl.createBuffer(),
            ao:gl.createBuffer(),skyQuad:gl.createBuffer(),
-           spos:gl.createBuffer(),scol:gl.createBuffer(),salpha:gl.createBuffer()};
+           spos:gl.createBuffer(),scol:gl.createBuffer(),salpha:gl.createBuffer(),
+           fpos:gl.createBuffer(),fnrm:gl.createBuffer(),fcol:gl.createBuffer(),
+           falpha:gl.createBuffer()};
   gl.bindBuffer(gl.ARRAY_BUFFER,ctx.buf.skyQuad);
   gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]),gl.STATIC_DRAW);
   gl.enable(gl.DEPTH_TEST);
@@ -205,6 +243,7 @@ function makeCtx(canvas){
   gl.frontFace(gl.CW);
   ctx.count=0;
   ctx.scount=0;
+  ctx.fcount=0;
   return ctx;
 }
 
@@ -247,13 +286,14 @@ function drawSplat(ctx,mvp,vp,cyl){
   gl.uniform1f(loc.uFar,cyl?cyl.far:600);
   gl.uniform1f(loc.uFlat,0);
   gl.uniform1f(loc.uSplat,1);
+  gl.uniform1f(loc.uFrus,0);
   gl.uniform1f(loc.uFogK,0);
   // Test depth but do not write it, so overlapping patches blend instead of
   // one arbitrarily winning. Offset toward the eye or the patch z-fights with
   // the surface it is lying on.
   gl.depthMask(false);
   gl.enable(gl.BLEND);
-  gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+  gl.blendFunc(gl.ONE,gl.ONE_MINUS_SRC_ALPHA);       // fragment is premultiplied
   gl.disable(gl.CULL_FACE);
   gl.enable(gl.POLYGON_OFFSET_FILL);
   gl.polygonOffset(-1,-2);
@@ -263,6 +303,58 @@ function drawSplat(ctx,mvp,vp,cyl){
   gl.disable(gl.BLEND);
   gl.depthMask(true);
   gl.uniform1f(loc.uSplat,0);
+  gl.disable(gl.SCISSOR_TEST);
+}
+
+function uploadFrusta(ctx,fr){
+  const {gl,buf}=ctx;
+  const put=(b,arr)=>{gl.bindBuffer(gl.ARRAY_BUFFER,b);
+    gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(arr),gl.STATIC_DRAW);};
+  put(buf.fpos,fr.pos); put(buf.fnrm,fr.nrm);
+  put(buf.fcol,fr.col); put(buf.falpha,fr.alpha);
+  ctx.fcount=fr.pos.length/3;
+}
+// The visible volume, in the scene rather than over it. Two consequences worth
+// the move: a wall in front of a cone now hides it, and the cone stops looking
+// like a decal that ignores the building it is passing through.
+//
+// Additive, depth-tested, depth-write off, culling off. Additive because the
+// triangles interpenetrate and cannot be sorted, so any blend that depends on
+// arrival order would flicker as the view turned. Culling off so the far side
+// of the volume accumulates too, which is what makes a deep part of the cone
+// read as deeper than a shallow one.
+function drawFrusta(ctx,mvp,view,vp){
+  const {gl,loc,buf}=ctx;
+  if(!ctx.fcount)return;
+  gl.viewport(vp[0],vp[1],vp[2],vp[3]);
+  gl.enable(gl.SCISSOR_TEST);
+  gl.scissor(vp[0],vp[1],vp[2],vp[3]);
+  gl.useProgram(ctx.prog);
+  const bind=(b,l,n)=>{gl.bindBuffer(gl.ARRAY_BUFFER,b);
+    gl.enableVertexAttribArray(l); gl.vertexAttribPointer(l,n,gl.FLOAT,false,0,0);};
+  bind(buf.fpos,loc.aPos,3); bind(buf.fnrm,loc.aNormal,3);
+  bind(buf.fcol,loc.aColor,3); bind(buf.falpha,loc.aAO,1);
+  gl.uniformMatrix4fv(loc.uMVP,false,new Float32Array(mvp));
+  gl.uniformMatrix4fv(loc.uView,false,new Float32Array(view));
+  gl.uniform1f(loc.uCyl,0);
+  gl.uniform1f(loc.uFlat,0);
+  gl.uniform1f(loc.uSplat,0);
+  gl.uniform1f(loc.uFrus,1);
+  gl.uniform1f(loc.uFogK,0);
+  gl.depthMask(false);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE,gl.ONE_MINUS_SRC_ALPHA);
+  gl.disable(gl.CULL_FACE);
+  // The far cap lands exactly on whatever stopped the ray - the ground, a wall -
+  // so without an offset toward the eye it z-fights the surface it is resting on.
+  gl.enable(gl.POLYGON_OFFSET_FILL);
+  gl.polygonOffset(-1,-3);
+  gl.drawArrays(gl.TRIANGLES,0,ctx.fcount);
+  gl.disable(gl.POLYGON_OFFSET_FILL);
+  gl.enable(gl.CULL_FACE);
+  gl.disable(gl.BLEND);
+  gl.depthMask(true);
+  gl.uniform1f(loc.uFrus,0);
   gl.disable(gl.SCISSOR_TEST);
 }
 
@@ -306,11 +398,12 @@ function drawScene(ctx,mvp,sun,skyTop,skyBot,vp,cyl,fogK){
   gl.uniform3fv(loc.uSun,sun);
   gl.uniform1f(loc.uFlat,ctx.flat?1:0);
   gl.uniform1f(loc.uSplat,0);
+  gl.uniform1f(loc.uFrus,0);
   gl.uniform1f(loc.uFogK,fogK===undefined?1/260:fogK);
   gl.drawArrays(gl.TRIANGLES,0,ctx.count);
   gl.disable(gl.SCISSOR_TEST);
 }
 
-return {M4,makeCtx,upload,drawScene,uploadSplat,drawSplat};
+return {M4,makeCtx,upload,drawScene,uploadSplat,drawSplat,uploadFrusta,drawFrusta};
 })();
 

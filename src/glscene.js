@@ -47,11 +47,20 @@ function sizeCanvas(cv){
 }
 // orbit parameters shared with the old SVG view
 const FOV3D=38;
+// Distance and target follow the property, for the same reason the plan does:
+// a constant 95 ft back from (12.5,12.5) framed the original square lot and
+// nothing else, so the measured lot opened as a close-up of one wall.
+function orbitSpan(){
+  const B=propBounds();
+  return {cx:(B.x0+B.x1)/2, cy:(B.y0+B.y1)/2,
+          span:Math.max(B.x1-B.x0,B.y1-B.y0,20)};
+}
 function orbitEye(){
   const A=rad(az), E=rad(elv);
-  const dist=95/Math.max(zoom,0.2);
-  let eye=[12.5+dist*Math.cos(E)*Math.sin(A), 12.5+dist*Math.cos(E)*Math.cos(A), dist*Math.sin(E)];
-  let at=[12.5,12.5,6];
+  const {cx,cy,span}=orbitSpan();
+  const dist=span*1.15/Math.max(zoom,0.2);
+  let eye=[cx+dist*Math.cos(E)*Math.sin(A), cy+dist*Math.cos(E)*Math.cos(A), dist*Math.sin(E)];
+  let at=[cx,cy,6];
   if(panX||panY){
     // Pan slides the whole view sideways, so eye and target move together
     // along the view's own right and up axes - shifting only the target would
@@ -105,6 +114,44 @@ function pushSplat(c){
   const k=splat?splatGLKey:'none';
   if(c.splatKey!==k){ GL.uploadSplat(c,sp); c.splatKey=k; }
 }
+
+/* ---------- frustum solids as scene geometry ---------- */
+// buildFrusta() produces quads with no normals, because the SVG fallback never
+// needed them. The Fresnel shading does, and per-triangle is the honest choice:
+// the far cap is clipped against whatever stopped each ray, so it is generally
+// not planar and a per-quad normal would be a guess.
+let frusGL=null, frusGLKey='';
+function frusMesh(){
+  const key=_overlayKey+'|'+(frusta?frusta.length:0);
+  if(frusGL&&frusGLKey===key)return frusGL;
+  const pos=[],nrm=[],col=[],alpha=[];
+  const tri=(A,B,C,c,a)=>{
+    const ux=B[0]-A[0],uy=B[1]-A[1],uz=B[2]-A[2];
+    const vx=C[0]-A[0],vy=C[1]-A[1],vz=C[2]-A[2];
+    let nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+    const l=Math.hypot(nx,ny,nz);
+    if(!l)return;                                   // degenerate sliver
+    nx/=l; ny/=l; nz/=l;
+    [A,B,C].forEach(p=>{pos.push(p[0],p[1],p[2]); nrm.push(nx,ny,nz);
+                        col.push(c[0],c[1],c[2]); alpha.push(a);});
+  };
+  const same=(a,b)=>a[0]===b[0]&&a[1]===b[1]&&a[2]===b[2];
+  (frusta||[]).forEach(f=>{
+    const c=hexRGB(f.col), [A,B,C,D]=f.p;
+    tri(A,B,C,c,f.a);
+    // The side and cap fans are emitted as apex,a,b,apex - a triangle wearing a
+    // quad's clothes. Splitting that into two would add a zero-area triangle.
+    if(D&&!same(D,A))tri(A,C,D,c,f.a);
+  });
+  frusGL={pos,nrm,col,alpha};
+  frusGLKey=key;
+  return frusGL;
+}
+function pushFrusta(c){
+  const fr=frusta?frusMesh():{pos:[],nrm:[],col:[],alpha:[]};
+  const k=frusta?frusGLKey:'none';
+  if(c.frusKey!==k){ GL.uploadFrusta(c,fr); c.frusKey=k; }
+}
 let glFailed=false;
 function render3DGL(){
   if(glFailed||typeof GL==='undefined')return false;
@@ -120,13 +167,19 @@ function render3DGL_(){
   const m=ensureMesh();
   if(c.uploaded!==meshKey){GL.upload(c,m);c.uploaded=meshKey;}
   const {eye,at}=orbitEye();
-  const projM=GL.M4.perspective(FOV3D,w/h,0.5,600);
+  // Far plane follows the framing distance, or a big lot clips against it.
+  const far=Math.max(600,orbitSpan().span*4);
+  const projM=GL.M4.perspective(FOV3D,w/h,0.5,far);
   const view=GL.M4.lookAtLH(eye,at,[0,0,1]);
   const mvp=GL.M4.mul(projM,view);
   glView3D={mvp,view};
   GL.drawScene(c,mvp,SUNV,SKYT,SKYB,[0,0,w,h]);
   pushSplat(c);
   if(splat)GL.drawSplat(c,mvp,[0,0,w,h]);
+  pushFrusta(c);
+  // Last, so the volume lies over the splatter rather than under it - it is the
+  // thing you switched on to look at.
+  if(frusta&&frusOn())GL.drawFrusta(c,mvp,view,[0,0,w,h]);
   return true;
 }
 /* ---------------- plan view, orthographic ---------------- */

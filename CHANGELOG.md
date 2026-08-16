@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.6.0
+
+### Frustum solids are in the scene, not over it
+The last ray-cast overlay painted on top of the render. With no depth buffer a
+cone pointing away through the house was drawn over the wall that blocks it,
+and the solids were expensive enough as SVG that they had to disappear while
+you orbited - the one moment you most want to see the shape of a volume. They
+are now triangles drawn against the same depth buffer as everything else, and
+they stay put while the view moves.
+
+Shading is premultiplied alpha with a gentle Fresnel lift. Additive was tried
+first, for order-independence, and turned every volume grey: the destination is
+a daylit scene with no headroom left, so adding any colour drifts it to white
+and takes the camera's identity with it. The order-dependence that motivated
+additive turned out not to exist - draw order is buffer order, so it is fixed
+across frames.
+
+### A frustum no longer smears across an occlusion edge
+The volume rendered as a fan of blades. Ablating the geometry in the live page
+showed the cause was the far cap, not the walls and not the shading: one ray
+clears a porch post at 6 ft while its neighbour is stopped by it at 55 ft, and
+the quad between them was drawn as a solid sheet from the post to the far lawn.
+A grid over azimuth and elevation cannot represent that crease, so quads whose
+corner ranges disagree badly are faded out and the cone visibly stops at the
+obstruction.
+
+### castRay3 had grown its own copy of the occlusion test
+`frusta.js` carried a private axis-aligned `insideBox()`, so the drawn volume
+ignored `yaw` and treated a cylinder or tree canopy as its bounding box -
+disagreeing with the coverage figure beside it for exactly the occluders the
+transform work added. It now goes through `insideOccluder()`, the same test
+`blocked()` and the splatter use.
+
+### The opening view frames the lot it loaded
+`VIEW` is a fixed 100x88 ft box and the app boots a measured lot 199 ft across,
+so the plan opened cropped with the boundary off screen and the 3D orbit opened
+as a close-up of one wall. Both now frame the property.
+
+### Round occluders get a centre handle
+A selected tree or column drew four edge handles into a two-foot footprint,
+stacking them into one black smudge with N/E/S/W printed over each other.
+
 ## 0.5.0
 
 ### Splatter was painted over the render, not into it

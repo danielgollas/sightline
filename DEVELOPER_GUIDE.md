@@ -44,7 +44,7 @@ Modules, roughly in dependency order:
 | `catalog.js` | catalog merge/variants, pixel density, DORI ranges |
 | `occlusion.js` | `blocked()`, `qual()`, PT sweep — the coverage core |
 | `raster.js` `cones.js` `plan.js` | plan view |
-| `splat.js` `frusta.js` `materials.js` | 3D overlays |
+| `splat.js` `frusta.js` `materials.js` | translucent scene geometry, materials |
 | `pov.js` `view3d.js` `glscene.js` | camera views and WebGL wiring |
 | `coverage.js` | the sweep, and the worker assembled from its own source |
 | `project.js` | persistence, import/export, cost and storage maths |
@@ -71,6 +71,14 @@ the change was deliberate.** Both now call `hitsOccluder()` in `shapes.js`.
 What stays separate is loop policy: the caster skips the layer toggles because
 it runs in the bake's hot loop, and it takes an unbounded ray with a `maxT`
 rather than a 0..1 segment.
+
+The same rot grew back once, so watch for it. `castRay3()` in `frusta.js` kept a
+private `insideBox()` that tested an axis-aligned box: it ignored `yaw` and
+treated a cylinder or a tree canopy as its bounding box, so the drawn volume
+disagreed with the coverage percentage printed beside it — silently, and only
+for the shapes the transform work had just added. It now calls
+`insideOccluder()`. A private containment test is the same mistake as a private
+intersection test.
 
 The coverage worker in `coverage.js` is held to the same rule by a different
 trick: it is assembled from the **source text** of the live functions via
@@ -127,12 +135,29 @@ layer reduced to the diagram: grid, boundary, cones, labels, handles. Its
 projection is built to match `wx()`/`wy()` exactly, and `planRendered()` gates
 the flat fills that would otherwise hide the render.
 
-**Splatter is geometry, not an overlay.** It goes through `GL.drawSplat`
-against the real depth buffer. Drawn as SVG it was painted over the render and
-patches behind a building showed through them. If you are tempted to add
-another overlay that represents something *in* the scene, that is the lesson:
-an overlay cannot be occluded by the scene. Frustum solids are still SVG, and
-still have this limitation.
+**Splatter and frustum solids are geometry, not overlays.** They go through
+`GL.drawSplat` and `GL.drawFrusta` against the real depth buffer. Drawn as SVG
+they were painted over the render, so a patch behind a building showed through
+it and a cone pointing away through the house covered the wall that blocks it.
+If you are tempted to add another overlay that represents something *in* the
+scene, that is the lesson: an overlay cannot be occluded by the scene. What is
+left in SVG is the diagram - grid, boundary, cones, labels, handles - none of
+which claims to be a solid.
+
+Both translucent passes emit **premultiplied** colour and blend with
+`ONE, ONE_MINUS_SRC_ALPHA`. Additive was tried for the frusta, on the theory
+that interpenetrating triangles cannot be sorted so the blend must be
+order-independent. It made every volume grey - the destination is a daylit
+scene with no headroom, so adding any colour drifts it to white - and the
+premise was wrong anyway: draw order is buffer order, fixed across frames, so
+nothing flickers as the view turns.
+
+**A frustum quad that straddles an occlusion edge is faded out.** The far cap
+is a grid over (azimuth, elevation), and where one ray clears an obstruction
+and its neighbour does not, the quad between them spans that whole gap. Drawn
+solid it becomes a sheet from the porch post to the far lawn; a fan of those is
+what the volume looked like before `straddle()` in `frusta.js`. The grid cannot
+represent the crease, so the cone is faded to nothing there instead.
 
 **Why the split.** Editing handles are `<polygon>` elements with `data-box`
 attributes, so dragging a roof edge is ordinary hit-testing. In pure WebGL each

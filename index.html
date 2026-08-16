@@ -322,6 +322,14 @@ uniform float uFar;
 // uSplat > 0 draws the coverage splatter: flat per-quad colour, per-vertex
 // alpha smuggled in through aAO (which flat shading does not use), no fog.
 uniform float uSplat;
+// uFrus > 0 draws the frustum solids. Same flat-colour path as the splatter,
+// but the alpha is modulated by a Fresnel term so the volume reads as a volume:
+// a surface seen edge-on covers more of the solid along the line of sight than
+// one seen face-on, so brightening at grazing angles is what a real
+// participating medium does. Drawn additively, which makes the result
+// independent of the order the triangles arrive in - and they cannot be sorted,
+// because they interpenetrate.
+uniform float uFrus;
 // Fog falls off with distance from the eye. The plan camera sits hundreds of
 // feet up looking down, which pins that term at maximum and washes the whole
 // view out, so the plan passes 0 here.
@@ -361,9 +369,32 @@ void main(){
   float up = aNormal.z * 0.5 + 0.5;
   vec3 ambient = mix(vec3(0.30,0.29,0.27), vec3(0.44,0.50,0.60), up);
   vec3 lit = aColor * (ambient + vec3(0.95,0.92,0.84) * lam * 0.85);
-  float flat_ = max(uFlat, uSplat);
+  float flat_ = max(uFlat, max(uSplat, uFrus));
   vCol = mix(lit * aAO, aColor, flat_);
-  vA = mix(1.0, aAO, uSplat);
+  vA = mix(1.0, aAO, max(uSplat, uFrus));
+  if(uFrus > 0.5){
+    // Fresnel in view space. uView is the real view matrix on this path.
+    mat3 nv = mat3(uView[0].xyz, uView[1].xyz, uView[2].xyz);
+    vec3 n = normalize(nv * aNormal);
+    vec3 v = normalize(-(uView * vec4(aPos,1.0)).xyz);
+    float f = 1.0 - abs(dot(n, v));
+    // aAO carries the per-quad alpha buildFrusta() chose, which was tuned for
+    // an SVG painter stacking a dozen polygons on top of each other. Here the
+    // depth buffer means you see about two layers, so the same numbers came out
+    // nearly invisible; the gain restores the weight.
+    //
+    // The Fresnel lift is deliberately gentle. A frustum's walls are big flat
+    // sheets, so at almost any orbit angle one of them is edge-on, and a strong
+    // grazing term turned the volume into a fan of blazing blades. Depth is
+    // carried instead by how many layers a ray crosses - which is what depth
+    // actually is - with this only softening the silhouette.
+    vA = clamp(aAO * 3.0 * (0.82 + 0.45 * f * f), 0.0, 0.62);
+    // Push toward the pure hue. Which camera a volume belongs to is the whole
+    // point of colouring it, and a thin translucent layer of a muted colour
+    // reads as grey long before it reads as orange.
+    float lum = dot(aColor, vec3(0.30,0.59,0.11));
+    vCol = clamp(mix(vec3(lum), aColor, 1.45), 0.0, 1.0);
+  }
   float dist = (uCyl > 0.5) ? length((uView * vec4(aPos,1.0)).xyz) : clip.w;
   vFog = mix(clamp(dist * uFogK, 0.0, 0.55), 0.0, flat_);
 }`;
@@ -375,7 +406,11 @@ varying float vFog;
 varying float vA;
 void main(){
   vec3 haze = vec3(0.61,0.77,0.89);
-  gl_FragColor = vec4(mix(vCol, haze, vFog), vA);
+  // Premultiplied. The translucent passes blend with ONE, ONE_MINUS_SRC_ALPHA,
+  // which keeps a layer's own hue instead of adding light to the destination -
+  // additive over a daylit scene has no headroom left and every colour drifts
+  // to white. On the opaque pass vA is 1, so this is the colour unchanged.
+  gl_FragColor = vec4(mix(vCol, haze, vFog) * vA, vA);
 }`;
 
 const SKY_VS = `
@@ -429,6 +464,7 @@ function makeCtx(canvas){
     uHalfV:gl.getUniformLocation(ctx.prog,'uHalfV'),
     uFar:gl.getUniformLocation(ctx.prog,'uFar'),
     uSplat:gl.getUniformLocation(ctx.prog,'uSplat'),
+    uFrus:gl.getUniformLocation(ctx.prog,'uFrus'),
     uFogK:gl.getUniformLocation(ctx.prog,'uFogK'),
     skyXY:gl.getAttribLocation(ctx.sky,'aXY'),
     skyTop:gl.getUniformLocation(ctx.sky,'uTop'),
@@ -436,7 +472,9 @@ function makeCtx(canvas){
   };
   ctx.buf={pos:gl.createBuffer(),nrm:gl.createBuffer(),col:gl.createBuffer(),
            ao:gl.createBuffer(),skyQuad:gl.createBuffer(),
-           spos:gl.createBuffer(),scol:gl.createBuffer(),salpha:gl.createBuffer()};
+           spos:gl.createBuffer(),scol:gl.createBuffer(),salpha:gl.createBuffer(),
+           fpos:gl.createBuffer(),fnrm:gl.createBuffer(),fcol:gl.createBuffer(),
+           falpha:gl.createBuffer()};
   gl.bindBuffer(gl.ARRAY_BUFFER,ctx.buf.skyQuad);
   gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]),gl.STATIC_DRAW);
   gl.enable(gl.DEPTH_TEST);
@@ -445,6 +483,7 @@ function makeCtx(canvas){
   gl.frontFace(gl.CW);
   ctx.count=0;
   ctx.scount=0;
+  ctx.fcount=0;
   return ctx;
 }
 
@@ -487,13 +526,14 @@ function drawSplat(ctx,mvp,vp,cyl){
   gl.uniform1f(loc.uFar,cyl?cyl.far:600);
   gl.uniform1f(loc.uFlat,0);
   gl.uniform1f(loc.uSplat,1);
+  gl.uniform1f(loc.uFrus,0);
   gl.uniform1f(loc.uFogK,0);
   // Test depth but do not write it, so overlapping patches blend instead of
   // one arbitrarily winning. Offset toward the eye or the patch z-fights with
   // the surface it is lying on.
   gl.depthMask(false);
   gl.enable(gl.BLEND);
-  gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+  gl.blendFunc(gl.ONE,gl.ONE_MINUS_SRC_ALPHA);       // fragment is premultiplied
   gl.disable(gl.CULL_FACE);
   gl.enable(gl.POLYGON_OFFSET_FILL);
   gl.polygonOffset(-1,-2);
@@ -503,6 +543,58 @@ function drawSplat(ctx,mvp,vp,cyl){
   gl.disable(gl.BLEND);
   gl.depthMask(true);
   gl.uniform1f(loc.uSplat,0);
+  gl.disable(gl.SCISSOR_TEST);
+}
+
+function uploadFrusta(ctx,fr){
+  const {gl,buf}=ctx;
+  const put=(b,arr)=>{gl.bindBuffer(gl.ARRAY_BUFFER,b);
+    gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(arr),gl.STATIC_DRAW);};
+  put(buf.fpos,fr.pos); put(buf.fnrm,fr.nrm);
+  put(buf.fcol,fr.col); put(buf.falpha,fr.alpha);
+  ctx.fcount=fr.pos.length/3;
+}
+// The visible volume, in the scene rather than over it. Two consequences worth
+// the move: a wall in front of a cone now hides it, and the cone stops looking
+// like a decal that ignores the building it is passing through.
+//
+// Additive, depth-tested, depth-write off, culling off. Additive because the
+// triangles interpenetrate and cannot be sorted, so any blend that depends on
+// arrival order would flicker as the view turned. Culling off so the far side
+// of the volume accumulates too, which is what makes a deep part of the cone
+// read as deeper than a shallow one.
+function drawFrusta(ctx,mvp,view,vp){
+  const {gl,loc,buf}=ctx;
+  if(!ctx.fcount)return;
+  gl.viewport(vp[0],vp[1],vp[2],vp[3]);
+  gl.enable(gl.SCISSOR_TEST);
+  gl.scissor(vp[0],vp[1],vp[2],vp[3]);
+  gl.useProgram(ctx.prog);
+  const bind=(b,l,n)=>{gl.bindBuffer(gl.ARRAY_BUFFER,b);
+    gl.enableVertexAttribArray(l); gl.vertexAttribPointer(l,n,gl.FLOAT,false,0,0);};
+  bind(buf.fpos,loc.aPos,3); bind(buf.fnrm,loc.aNormal,3);
+  bind(buf.fcol,loc.aColor,3); bind(buf.falpha,loc.aAO,1);
+  gl.uniformMatrix4fv(loc.uMVP,false,new Float32Array(mvp));
+  gl.uniformMatrix4fv(loc.uView,false,new Float32Array(view));
+  gl.uniform1f(loc.uCyl,0);
+  gl.uniform1f(loc.uFlat,0);
+  gl.uniform1f(loc.uSplat,0);
+  gl.uniform1f(loc.uFrus,1);
+  gl.uniform1f(loc.uFogK,0);
+  gl.depthMask(false);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE,gl.ONE_MINUS_SRC_ALPHA);
+  gl.disable(gl.CULL_FACE);
+  // The far cap lands exactly on whatever stopped the ray - the ground, a wall -
+  // so without an offset toward the eye it z-fights the surface it is resting on.
+  gl.enable(gl.POLYGON_OFFSET_FILL);
+  gl.polygonOffset(-1,-3);
+  gl.drawArrays(gl.TRIANGLES,0,ctx.fcount);
+  gl.disable(gl.POLYGON_OFFSET_FILL);
+  gl.enable(gl.CULL_FACE);
+  gl.disable(gl.BLEND);
+  gl.depthMask(true);
+  gl.uniform1f(loc.uFrus,0);
   gl.disable(gl.SCISSOR_TEST);
 }
 
@@ -546,12 +638,13 @@ function drawScene(ctx,mvp,sun,skyTop,skyBot,vp,cyl,fogK){
   gl.uniform3fv(loc.uSun,sun);
   gl.uniform1f(loc.uFlat,ctx.flat?1:0);
   gl.uniform1f(loc.uSplat,0);
+  gl.uniform1f(loc.uFrus,0);
   gl.uniform1f(loc.uFogK,fogK===undefined?1/260:fogK);
   gl.drawArrays(gl.TRIANGLES,0,ctx.count);
   gl.disable(gl.SCISSOR_TEST);
 }
 
-return {M4,makeCtx,upload,drawScene,uploadSplat,drawSplat};
+return {M4,makeCtx,upload,drawScene,uploadSplat,drawSplat,uploadFrusta,drawFrusta};
 })();
 
 
@@ -1568,9 +1661,22 @@ function fit(){
   const s=baseScale()*zoom2;
   return {s,ox:W/2-ctrX*s,oy:H/2-ctrY*s};
 }
+// VIEW is a fixed 100x88 ft box, and the scene the app actually boots with is a
+// measured lot 199 ft across - so the plan opened cropped, with the boundary off
+// screen in three directions, and the 3D orbit opened with the house filling the
+// frame. Frame what is there instead of a constant.
+function fitProp(){
+  if(!prop||prop.length<3)return;
+  const B=propBounds();
+  ctrX=(B.x0+B.x1)/2; ctrY=(B.y0+B.y1)/2;
+  T=fit();                                  // refresh W/H for the live stage
+  const b=baseScale();
+  if(b>0)zoom2=clamp(Math.min(W/Math.max(B.x1-B.x0,1),H/Math.max(B.y1-B.y0,1))/(b*1.10),0.05,20);
+  T=fit();
+}
 function resetView(){
   if(mode==='3d'){zoom=1;panX=0;panY=0;az=-38;elv=32;}
-  else {zoom2=1;ctrX=VIEW.x0+VIEW.w/2;ctrY=VIEW.y0+VIEW.h/2;}
+  else fitProp();
   render();}
 let T=fit();
 const wx=x=>x*T.s+T.ox, wy=y=>y*T.s+T.oy;
@@ -2004,9 +2110,11 @@ function buildSplat(){
 }
 
 /* ------- frustum solids: the actual visible volume, clipped by structures ------- */
-function insideBox(b,x,y,z){
-  return x>b.x0&&x<b.x1&&y>b.y0&&y<b.y1&&z>=baseAt(b,x,y)&&z<=topAt(b,x,y);
-}
+// Containment goes through insideOccluder(), the same test blocked() and the
+// splatter use. This file used to carry its own axis-aligned insideBox(), which
+// silently ignored yaw and treated a cylinder or a tree canopy as its bounding
+// box - so the drawn volume disagreed with the coverage figures beside it for
+// exactly the occluders the transform work added.
 function castRay3(c,azm,elv2,maxR){
   const a=rad(azm), e=rad(elv2);
   const dx=Math.cos(a)*Math.cos(e), dy=Math.sin(a)*Math.cos(e), dz=-Math.sin(e);
@@ -2019,8 +2127,8 @@ function castRay3(c,azm,elv2,maxR){
       let hit=false;
       for(const b of boxes){
         if(!b.on)continue;
-        if(insideBox(b,c.x,c.y,c.z))continue;          // mounted inside it
-        if(insideBox(b,x,y,z)){hit=true;break;}
+        if(insideOccluder(b,c.x,c.y,c.z))continue;      // mounted inside it
+        if(insideOccluder(b,x,y,z)){hit=true;break;}
       }
       if(hit){lim=Math.max(0.5,t-step*0.5);break;}
     }
@@ -2036,7 +2144,12 @@ function buildFrusta(){
     const L=lensOf(c), k=colC(c);
     const list=(tourOn())?stops(c):[{a:c.a,t:c.t||0,d:1}];
     list.forEach((st,si)=>{
-      const NA=Math.max(6,Math.round(L.f/12)), NV=5;
+      // The "far cap" is rarely at the far range: with any down-tilt every ray
+      // stops on the ground, so the cap IS the ground footprint. A 7x5 grid
+      // across a footprint that runs from 7 ft to 60 ft out cannot follow that
+      // curve, and the flat quads cut through the lawn as a fan of blades. The
+      // count below is what stopped that being visible.
+      const NA=Math.max(12,Math.round(L.f/7)), NV=10;
       const grid=[];
       for(let i=0;i<=NA;i++){
         const azm=st.a-L.f/2+L.f*i/NA;
@@ -2048,18 +2161,47 @@ function buildFrusta(){
         grid.push(col);
       }
       const alpha=si===0?0.16:0.07;
+      // A cone fades with distance from the lens. That is worth saying twice
+      // over: it is what the coverage model already believes - pixel density
+      // falls off with range - and it stops the far end of a 60 ft volume
+      // sitting on the lawn as a uniform slab.
+      const fade=P=>{
+        let mx=0,my=0,mz=0;
+        P.forEach(p=>{mx+=p[0];my+=p[1];mz+=p[2];});
+        const n=P.length;
+        const d=Math.hypot(mx/n-c.x,my/n-c.y,mz/n-c.z)/Math.max(L.r,1);
+        return 0.35+0.65*Math.max(0,1-d);
+      };
+      // A quad whose corners came back at wildly different ranges is straddling
+      // an occlusion edge - one ray cleared the porch post, its neighbour did
+      // not. Drawn solid it becomes a sheet stretching from the post to the far
+      // lawn, and those sheets are what turned the volume into a fan of blades.
+      // The grid cannot represent the crease, so fade it out instead: the cone
+      // visibly stops at the obstruction rather than smearing past it.
+      const straddle=P=>{
+        const d=P.map(p=>Math.hypot(p[0]-c.x,p[1]-c.y,p[2]-c.z));
+        const t=Math.min(...d)/Math.max(Math.max(...d),0.01);
+        // Gentle: only a quad whose corners differ by more than about 8x is
+        // removed outright. A first attempt cut at 4x and dissolved the volume
+        // wherever it passed a tree, which is exactly where you are looking.
+        return clamp((t-0.12)/0.30,0,1);
+      };
+      const push=(P,a)=>{
+        const w=a*fade(P)*straddle(P);
+        if(w>0.002)out.push({p:P,col:k,a:w});
+      };
       // far cap
       for(let i=0;i<NA;i++)for(let j=0;j<NV;j++)
-        out.push({p:[grid[i][j],grid[i+1][j],grid[i+1][j+1],grid[i][j+1]],col:k,a:alpha});
+        push([grid[i][j],grid[i+1][j],grid[i+1][j+1],grid[i][j+1]],alpha);
       // sides, top and bottom: apex to the outer edges
       const apex=[c.x,c.y,c.z];
       for(let j=0;j<NV;j++){
-        out.push({p:[apex,grid[0][j],grid[0][j+1],apex],col:k,a:alpha*0.8});
-        out.push({p:[apex,grid[NA][j],grid[NA][j+1],apex],col:k,a:alpha*0.8});
+        push([apex,grid[0][j],grid[0][j+1],apex],alpha*0.8);
+        push([apex,grid[NA][j],grid[NA][j+1],apex],alpha*0.8);
       }
       for(let i=0;i<NA;i++){
-        out.push({p:[apex,grid[i][0],grid[i+1][0],apex],col:k,a:alpha*0.55});
-        out.push({p:[apex,grid[i][NV],grid[i+1][NV],apex],col:k,a:alpha*0.55});
+        push([apex,grid[i][0],grid[i+1][0],apex],alpha*0.55);
+        push([apex,grid[i][NV],grid[i+1][NV],apex],alpha*0.55);
       }
     });
   });
@@ -2709,7 +2851,11 @@ function draw3d(){
     items.push({d:-1e6,e:el('line',{x1:a.x,y1:a.y,x2:b.x,y2:b.y,stroke:'#1E2732','stroke-width':1})});
     items.push({d:-1e6,e:el('line',{x1:c.x,y1:c.y,x2:d.x,y2:d.y,stroke:'#1E2732','stroke-width':1})});
   }
-  if(frusOn()&&frusta&&!orbit){
+  // Frustum solids are drawn by the GL pass now (GL.drawFrusta), depth-tested
+  // against the scene. As SVG they were painted over the render, so a cone
+  // pointing away through the house showed straight through the wall - and they
+  // were expensive enough to have to disappear while you orbited.
+  if(!GLON&&frusOn()&&frusta&&!orbit){
     frusta.forEach(f=>{
       const P=f.p.map(([x,y,z])=>proj(x,y,z));
       items.push({d:P.reduce((s,q)=>s+q.d,0)/P.length,
@@ -2736,8 +2882,13 @@ function draw3d(){
       items.push({d:dep,e});
     });
     if(isSel){
+      // A cylinder or a tree is described by its centre and radius, not by four
+      // sides, and its x0..x1 is only a couple of feet wide - so the four edge
+      // handles land on top of each other and read as one black smudge with
+      // N/E/S/W stacked in it. Round occluders get the centre handle only.
+      const round=b.shape==='cyl'||b.shape==='tree';
       [['zt',TC(b),'#E9E5DB'],['zb',BC(b),'#9AA3B0']].forEach(([key,C,clr])=>{
-        EDGES.forEach(ed=>{
+        if(!round)EDGES.forEach(ed=>{
           const a=C[ed.c[0]], z=C[ed.c[1]];
           const P=proj((a[0]+z[0])/2,(a[1]+z[1])/2,(a[2]+z[2])/2);
           const h=el('rect',{x:P.x-6,y:P.y-6,width:12,height:12,rx:2,fill:'#0F1319',
@@ -2832,11 +2983,20 @@ function sizeCanvas(cv){
 }
 // orbit parameters shared with the old SVG view
 const FOV3D=38;
+// Distance and target follow the property, for the same reason the plan does:
+// a constant 95 ft back from (12.5,12.5) framed the original square lot and
+// nothing else, so the measured lot opened as a close-up of one wall.
+function orbitSpan(){
+  const B=propBounds();
+  return {cx:(B.x0+B.x1)/2, cy:(B.y0+B.y1)/2,
+          span:Math.max(B.x1-B.x0,B.y1-B.y0,20)};
+}
 function orbitEye(){
   const A=rad(az), E=rad(elv);
-  const dist=95/Math.max(zoom,0.2);
-  let eye=[12.5+dist*Math.cos(E)*Math.sin(A), 12.5+dist*Math.cos(E)*Math.cos(A), dist*Math.sin(E)];
-  let at=[12.5,12.5,6];
+  const {cx,cy,span}=orbitSpan();
+  const dist=span*1.15/Math.max(zoom,0.2);
+  let eye=[cx+dist*Math.cos(E)*Math.sin(A), cy+dist*Math.cos(E)*Math.cos(A), dist*Math.sin(E)];
+  let at=[cx,cy,6];
   if(panX||panY){
     // Pan slides the whole view sideways, so eye and target move together
     // along the view's own right and up axes - shifting only the target would
@@ -2890,6 +3050,44 @@ function pushSplat(c){
   const k=splat?splatGLKey:'none';
   if(c.splatKey!==k){ GL.uploadSplat(c,sp); c.splatKey=k; }
 }
+
+/* ---------- frustum solids as scene geometry ---------- */
+// buildFrusta() produces quads with no normals, because the SVG fallback never
+// needed them. The Fresnel shading does, and per-triangle is the honest choice:
+// the far cap is clipped against whatever stopped each ray, so it is generally
+// not planar and a per-quad normal would be a guess.
+let frusGL=null, frusGLKey='';
+function frusMesh(){
+  const key=_overlayKey+'|'+(frusta?frusta.length:0);
+  if(frusGL&&frusGLKey===key)return frusGL;
+  const pos=[],nrm=[],col=[],alpha=[];
+  const tri=(A,B,C,c,a)=>{
+    const ux=B[0]-A[0],uy=B[1]-A[1],uz=B[2]-A[2];
+    const vx=C[0]-A[0],vy=C[1]-A[1],vz=C[2]-A[2];
+    let nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+    const l=Math.hypot(nx,ny,nz);
+    if(!l)return;                                   // degenerate sliver
+    nx/=l; ny/=l; nz/=l;
+    [A,B,C].forEach(p=>{pos.push(p[0],p[1],p[2]); nrm.push(nx,ny,nz);
+                        col.push(c[0],c[1],c[2]); alpha.push(a);});
+  };
+  const same=(a,b)=>a[0]===b[0]&&a[1]===b[1]&&a[2]===b[2];
+  (frusta||[]).forEach(f=>{
+    const c=hexRGB(f.col), [A,B,C,D]=f.p;
+    tri(A,B,C,c,f.a);
+    // The side and cap fans are emitted as apex,a,b,apex - a triangle wearing a
+    // quad's clothes. Splitting that into two would add a zero-area triangle.
+    if(D&&!same(D,A))tri(A,C,D,c,f.a);
+  });
+  frusGL={pos,nrm,col,alpha};
+  frusGLKey=key;
+  return frusGL;
+}
+function pushFrusta(c){
+  const fr=frusta?frusMesh():{pos:[],nrm:[],col:[],alpha:[]};
+  const k=frusta?frusGLKey:'none';
+  if(c.frusKey!==k){ GL.uploadFrusta(c,fr); c.frusKey=k; }
+}
 let glFailed=false;
 function render3DGL(){
   if(glFailed||typeof GL==='undefined')return false;
@@ -2905,13 +3103,19 @@ function render3DGL_(){
   const m=ensureMesh();
   if(c.uploaded!==meshKey){GL.upload(c,m);c.uploaded=meshKey;}
   const {eye,at}=orbitEye();
-  const projM=GL.M4.perspective(FOV3D,w/h,0.5,600);
+  // Far plane follows the framing distance, or a big lot clips against it.
+  const far=Math.max(600,orbitSpan().span*4);
+  const projM=GL.M4.perspective(FOV3D,w/h,0.5,far);
   const view=GL.M4.lookAtLH(eye,at,[0,0,1]);
   const mvp=GL.M4.mul(projM,view);
   glView3D={mvp,view};
   GL.drawScene(c,mvp,SUNV,SKYT,SKYB,[0,0,w,h]);
   pushSplat(c);
   if(splat)GL.drawSplat(c,mvp,[0,0,w,h]);
+  pushFrusta(c);
+  // Last, so the volume lies over the splatter rather than under it - it is the
+  // thing you switched on to look at.
+  if(frusta&&frusOn())GL.drawFrusta(c,mvp,view,[0,0,w,h]);
   return true;
 }
 /* ---------------- plan view, orthographic ---------------- */
@@ -4465,6 +4669,7 @@ function boot(){
   } else {
     CAT.seedFromProject(projectSnapshot());
   }
+  fitProp();                      // frame whatever lot we ended up with
   render(); list();
   CAT.fetchCatalog().then(()=>{
     clearSpecCache();

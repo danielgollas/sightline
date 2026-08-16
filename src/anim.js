@@ -97,6 +97,7 @@ function boot(){
   } else {
     CAT.seedFromProject(projectSnapshot());
   }
+  fitProp();                      // frame whatever lot we ended up with
   render(); list();
   CAT.fetchCatalog().then(()=>{
     clearSpecCache();

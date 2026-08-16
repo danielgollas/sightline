@@ -90,7 +90,11 @@ function draw3d(){
     items.push({d:-1e6,e:el('line',{x1:a.x,y1:a.y,x2:b.x,y2:b.y,stroke:'#1E2732','stroke-width':1})});
     items.push({d:-1e6,e:el('line',{x1:c.x,y1:c.y,x2:d.x,y2:d.y,stroke:'#1E2732','stroke-width':1})});
   }
-  if(frusOn()&&frusta&&!orbit){
+  // Frustum solids are drawn by the GL pass now (GL.drawFrusta), depth-tested
+  // against the scene. As SVG they were painted over the render, so a cone
+  // pointing away through the house showed straight through the wall - and they
+  // were expensive enough to have to disappear while you orbited.
+  if(!GLON&&frusOn()&&frusta&&!orbit){
     frusta.forEach(f=>{
       const P=f.p.map(([x,y,z])=>proj(x,y,z));
       items.push({d:P.reduce((s,q)=>s+q.d,0)/P.length,
@@ -117,8 +121,13 @@ function draw3d(){
       items.push({d:dep,e});
     });
     if(isSel){
+      // A cylinder or a tree is described by its centre and radius, not by four
+      // sides, and its x0..x1 is only a couple of feet wide - so the four edge
+      // handles land on top of each other and read as one black smudge with
+      // N/E/S/W stacked in it. Round occluders get the centre handle only.
+      const round=b.shape==='cyl'||b.shape==='tree';
       [['zt',TC(b),'#E9E5DB'],['zb',BC(b),'#9AA3B0']].forEach(([key,C,clr])=>{
-        EDGES.forEach(ed=>{
+        if(!round)EDGES.forEach(ed=>{
           const a=C[ed.c[0]], z=C[ed.c[1]];
           const P=proj((a[0]+z[0])/2,(a[1]+z[1])/2,(a[2]+z[2])/2);
           const h=el('rect',{x:P.x-6,y:P.y-6,width:12,height:12,rx:2,fill:'#0F1319',

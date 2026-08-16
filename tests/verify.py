@@ -519,9 +519,8 @@ def main():
             const cv = document.getElementById('gl3d');
             const inPlan = cv.__ctx ? cv.__ctx.scount : 0;
             document.getElementById('m3d').click();
-            // Frustum solids are still SVG overlays, so isolate splatter by
-            // turning them off: any polygons left would be splatter painted
-            // over the render, which is the bug this replaced.
+            // Isolate splatter from the frustum solids, which are their own
+            // GL pass with their own counter.
             opts.frus = false; render();
             const in3d = cv.__ctx ? cv.__ctx.scount : 0;
             const withSplat = document.querySelectorAll('#view3d polygon').length;
@@ -540,6 +539,81 @@ def main():
               splat_gl["withSplat"] == splat_gl["withoutSplat"], json.dumps(splat_gl))
         check("turning splatter off clears the GL geometry",
               splat_gl["afterOff"] == 0, json.dumps(splat_gl))
+
+        # ---- 18. frustum solids are scene geometry too ----
+        frus_gl = page.evaluate("""() => {
+            opts.splat = false; opts.frus = true;
+            document.getElementById('m3d').click(); render();
+            const cv = document.getElementById('gl3d');
+            const on = cv.__ctx ? cv.__ctx.fcount : 0;
+            const svgOn = document.querySelectorAll('#view3d polygon').length;
+            opts.frus = false; render();
+            const off = cv.__ctx ? cv.__ctx.fcount : 0;
+            const svgOff = document.querySelectorAll('#view3d polygon').length;
+            opts.frus = true; render();
+            // A quad straddling an occlusion edge is faded out, so no frustum
+            // quad may span a range ratio the grid cannot represent.
+            const c = cams.find(k => k.on);
+            let worstRatio = 0;
+            frusta.forEach(q => {
+              const d = q.p.map(p => Math.hypot(p[0]-c.x, p[1]-c.y, p[2]-c.z))
+                            .filter(v => v > 0.01);
+              if (d.length) worstRatio = Math.max(worstRatio, Math.max(...d)/Math.min(...d));
+            });
+            document.getElementById('m2d').click();
+            return {on, off, svgOn, svgOff, worstRatio};
+        }""")
+        check("frustum solids are uploaded as GL geometry",
+              frus_gl["on"] > 100, json.dumps(frus_gl))
+        check("turning frustum solids off clears the GL geometry",
+              frus_gl["off"] == 0, json.dumps(frus_gl))
+        check("frustum solids add no SVG polygons over the render",
+              frus_gl["svgOn"] == frus_gl["svgOff"], json.dumps(frus_gl))
+        check("no quad smears across an occlusion edge",
+              frus_gl["worstRatio"] < 12, f"worst corner range ratio {frus_gl['worstRatio']:.1f}x")
+
+        # ---- 19. the frustum cast agrees with the shared occlusion test ----
+        # castRay3 used to carry its own axis-aligned box test, so a rotated or
+        # round occluder clipped the drawn volume somewhere the coverage model
+        # did not agree with.
+        shape_agree = page.evaluate("""() => {
+            const c = cams.find(k => k.on);
+            // a tree squarely in front of the camera, well inside its range
+            const a = c.a * Math.PI / 180;
+            const cx = c.x + Math.cos(a) * 18, cy = c.y + Math.sin(a) * 18;
+            boxes.push({id:'TT', name:'probe', on:true, shape:'tree',
+                        x0:cx-1, x1:cx+1, y0:cy-1, y1:cy+1, r:1,
+                        canopyR:9, canopyH:10, zb:[0,0,0,0], zt:[18,18,18,18]});
+            meshKey = ''; splat = frusta = null; sceneGen++;
+            const hit = insideOccluder(boxes[boxes.length-1], cx, cy, 12);
+            // the same point through the frustum cast's own containment path
+            const r = castRay3(c, c.a, c.t || 0, 200);
+            const dFree = (() => { boxes.pop(); sceneGen++;
+                                   return castRay3(c, c.a, c.t || 0, 200).d; })();
+            sceneGen++;
+            return {canopyContains: hit, clipped: r.d, unclipped: dFree};
+        }""")
+        check("a tree canopy clips the frustum cast",
+              shape_agree["canopyContains"] and
+              shape_agree["clipped"] < shape_agree["unclipped"] - 1,
+              json.dumps(shape_agree))
+
+        # ---- 20. the opening view frames the lot it loaded ----
+        framing = page.evaluate("""() => {
+            document.getElementById('m2d').click();
+            resetView();
+            const B = propBounds();
+            const xs = [wx(B.x0), wx(B.x1)], ys = [wy(B.y0), wy(B.y1)];
+            const inside = xs.every(v => v >= -2 && v <= W + 2) &&
+                           ys.every(v => v >= -2 && v <= H + 2);
+            // and it must fill the stage, not sit as a speck in the middle
+            const fill = Math.max((xs[1]-xs[0])/W, (ys[1]-ys[0])/H);
+            return {inside, fill, W, H};
+        }""")
+        check("the plan opens with the whole property on screen",
+              framing["inside"], json.dumps(framing))
+        check("the plan opens filling the stage",
+              framing["fill"] > 0.7, f"lot covers {framing['fill']*100:.0f}% of the stage")
 
         check("no uncaught page errors", not errors, "; ".join(errors[:3]))
 
